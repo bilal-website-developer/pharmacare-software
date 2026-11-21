@@ -266,6 +266,9 @@ export async function callSupabaseRpc<T>(
   fallback: string,
   validate: (value: unknown) => value is T,
 ): Promise<T> {
+  if (isDesktopMode()) {
+    throw new Error('This action does not have a local desktop backend route yet.');
+  }
   if (!supabase) {
     throw new Error(getSupabaseErrorMessage(new Error('Supabase is not configured.'), fallback));
   }

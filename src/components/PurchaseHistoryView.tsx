@@ -7,6 +7,7 @@ import { supabase } from '../utils/supabase';
 import { dispatchStockChanged } from '../utils/stockAlertsEvents';
 import { isDemoDataLoadedLocally, DEMO_DATA_CHANGED_EVENT } from '../data/demoDataManager';
 import { downloadTableExport } from '../utils/tableExport';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 
 interface HistoryItem {
   medicine_id: string;
@@ -113,6 +114,32 @@ export function PurchaseHistoryView({ currentRole }: { currentRole: UserRole }) 
   const [notice, setNotice] = useState('');
 
   const load = useCallback(async () => {
+    if (isDesktopMode()) {
+      setLoading(true);
+      setError('');
+      try {
+        const query = new URLSearchParams({
+          p_search: search,
+          p_payment_type: paymentType,
+          p_date_from: dateFrom,
+          p_date_to: dateTo,
+          p_page: String(page),
+          p_page_size: String(PAGE_SIZE),
+          p_export: 'false',
+        });
+        const result = await localApiRequest<PurchaseHistoryResult>(`/api/purchases/history?${query.toString()}`);
+        if (!Array.isArray(result.rows) || typeof result.total_count !== 'number') {
+          throw new Error('The local purchase history service returned an invalid response.');
+        }
+        setRows(result.rows);
+        setSummary(result);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : 'Could not load purchase history.');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
     if (!supabase) {
       setError('Supabase is not configured.');
       setLoading(false);
@@ -249,6 +276,20 @@ export function PurchaseHistoryView({ currentRole }: { currentRole: UserRole }) 
   }, [load]);
 
   const openDetail = async (purchase: PurchaseRow) => {
+    if (isDesktopMode()) {
+      setDetailLoading(true);
+      setError('');
+      try {
+        const detail = await localApiRequest<PurchaseDetail>(`/api/purchases/${encodeURIComponent(purchase.id)}`);
+        if (!Array.isArray(detail.items)) throw new Error('The local purchase service returned invalid details.');
+        setSelected(detail);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : 'Could not load purchase details.');
+      } finally {
+        setDetailLoading(false);
+      }
+      return;
+    }
     if (!supabase) return setError('Supabase is not configured.');
     setDetailLoading(true);
     setError('');
@@ -264,6 +305,29 @@ export function PurchaseHistoryView({ currentRole }: { currentRole: UserRole }) 
   };
 
   const exportFiltered = async (format: 'csv' | 'xlsx') => {
+    if (isDesktopMode()) {
+      setExporting(true);
+      setError('');
+      try {
+        const query = new URLSearchParams({
+          p_search: search,
+          p_payment_type: paymentType,
+          p_date_from: dateFrom,
+          p_date_to: dateTo,
+          p_page: '1',
+          p_page_size: String(PAGE_SIZE),
+          p_export: 'true',
+        });
+        const result = await localApiRequest<PurchaseHistoryResult>(`/api/purchases/history?${query.toString()}`);
+        if (!Array.isArray(result.rows)) throw new Error('The local purchase history service returned invalid export data.');
+        await exportPurchases(result, format);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : 'Could not export purchase history.');
+      } finally {
+        setExporting(false);
+      }
+      return;
+    }
     if (!supabase) return setError('Supabase is not configured.');
     setExporting(true);
     setError('');
@@ -279,6 +343,15 @@ export function PurchaseHistoryView({ currentRole }: { currentRole: UserRole }) 
       });
       if (queryError) throw queryError;
       const result = data as PurchaseHistoryResult;
+      await exportPurchases(result, format);
+    } catch (caught) {
+      setError(getSupabaseErrorMessage(caught, 'Could not export purchase history.'));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const exportPurchases = async (result: PurchaseHistoryResult, format: 'csv' | 'xlsx') => {
       const purchaseHeaders = [
         'PR-ID', 'Date', 'Supplier', 'Invoice No.', 'Items', 'Subtotal', 'Discount',
         'Total', 'Payment', 'Paid', 'Due', 'Created By', 'Status', 'Notes',
@@ -327,11 +400,6 @@ export function PurchaseHistoryView({ currentRole }: { currentRole: UserRole }) 
         XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(itemSheet), 'Items');
         XLSX.writeFile(workbook, `purchase-history-${karachiToday()}.xlsx`);
       }
-    } catch (caught) {
-      setError(getSupabaseErrorMessage(caught, 'Could not export purchase history.'));
-    } finally {
-      setExporting(false);
-    }
   };
 
   const printPurchase = (purchase: PurchaseDetail) => {
@@ -349,14 +417,18 @@ export function PurchaseHistoryView({ currentRole }: { currentRole: UserRole }) 
     const reason = window.prompt(`Enter the reason for voiding ${purchase.pr_no}:`)?.trim();
     if (!reason) return;
     if (!window.confirm(`Void ${purchase.pr_no}? This cannot be undone.`)) return;
-    if (!supabase) return setError('Supabase is not configured.');
     setError('');
     try {
-      const { error: voidError } = await supabase.rpc('void_purchase', {
-        p_purchase_id: purchase.id,
-        p_reason: reason,
-      });
-      if (voidError) throw voidError;
+      if (isDesktopMode()) {
+        await localApiRequest(`/api/purchases/${encodeURIComponent(purchase.id)}/void`, 'POST', { reason });
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const { error: voidError } = await supabase.rpc('void_purchase', {
+          p_purchase_id: purchase.id,
+          p_reason: reason,
+        });
+        if (voidError) throw voidError;
+      }
       dispatchStockChanged();
       setNotice(`${purchase.pr_no} was voided.`);
       await load();

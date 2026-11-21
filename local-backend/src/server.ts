@@ -13,6 +13,11 @@ import { registerCashbookRoutes } from './routes/cashbookRoutes';
 import { registerReportRoutes } from './routes/reportRoutes';
 import { registerSettingsRoutes } from './routes/settingsRoutes';
 import { registerPrintRequestRoutes } from './routes/printRequestRoutes';
+import { registerMasterDataRoutes } from './routes/masterDataRoutes';
+import { registerTrashRoutes } from './routes/trashRoutes';
+import { registerNotificationRoutes } from './routes/notificationRoutes';
+import { registerStockRoutes } from './routes/stockRoutes';
+import { registerPreferenceRoutes } from './routes/preferenceRoutes';
 import { backupDatabase } from './db/database';
 import { activateShopLicense, checkLicenseStatus, recordSuccessfulCheckin } from './services/licenseService';
 import { getUserById } from './services/authService';
@@ -101,10 +106,16 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
                       ? ['reports']
                       : routePath.startsWith('/api/reports/')
                         ? ['sales_history']
+                        : routePath.startsWith('/api/master-data/')
+                          ? (request.method === 'GET' ? ['categories', 'products', 'stock_inventory'] : ['categories'])
                         : routePath.startsWith('/api/settings/')
                           ? ['settings']
                           : routePath.startsWith('/api/auth/users')
                             ? ['manage_users']
+                            : routePath.startsWith('/api/trash/')
+                              ? ['manage_users']
+                              : routePath.startsWith('/api/notifications/')
+                                ? ['stock_inventory', 'products']
                             : [];
 
     if (routePath.startsWith('/api/backup/')) {
@@ -192,6 +203,11 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
   registerReportRoutes(app, db);
   registerSettingsRoutes(app, db);
   registerPrintRequestRoutes(app, db);
+  registerMasterDataRoutes(app, db);
+  registerTrashRoutes(app, db);
+  registerNotificationRoutes(app, db);
+  registerStockRoutes(app, db);
+  registerPreferenceRoutes(app, db);
 
   return { app, db };
 }

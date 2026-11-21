@@ -8,6 +8,7 @@ import { BarcodeScannerTest } from './BarcodeScannerTest';
 import { fetchAllSupabaseRows } from '../utils/fetchAllSupabaseRows';
 import { getSupabaseErrorMessage } from '../utils/supabaseError';
 import { supabase } from '../utils/supabase';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 import { dispatchStockChanged } from '../utils/stockAlertsEvents';
 import { useBarcodeScanner } from '../utils/useBarcodeScanner';
 import {
@@ -181,6 +182,63 @@ function isProductsOverviewStats(value: unknown): value is ProductsOverviewStats
     && typeof value.out_of_stock === 'number'
     && typeof value.expiring_90 === 'number'
     && (value.stock_value_cost_paisa === null || typeof value.stock_value_cost_paisa === 'number');
+}
+
+function parseLocalMedicine(value: unknown): Medicine | null {
+  if (!isRecord(value)
+    || typeof value.id !== 'string'
+    || typeof value.code !== 'string'
+    || typeof value.brandName !== 'string'
+    || typeof value.genericName !== 'string'
+    || typeof value.drugClass !== 'string'
+    || !['OTC', 'RX', 'CONTROLLED', 'NARCOTIC'].includes(value.drugClass)
+    || typeof value.storageCondition !== 'string'
+    || !['ROOM_TEMPERATURE', 'COOL', 'COLD_REFRIGERATED'].includes(value.storageCondition)
+    || typeof value.currentStockSmallestUnit !== 'number'
+    || typeof value.minStockAlert !== 'number'
+    || typeof value.isActive !== 'boolean'
+    || !Array.isArray(value.units)) return null;
+  const units: MedicineUnit[] = [];
+  for (const unit of value.units) {
+    if (!isRecord(unit)
+      || typeof unit.id !== 'string'
+      || typeof unit.name !== 'string'
+      || typeof unit.conversionFactor !== 'number'
+      || typeof unit.isDefaultSaleUnit !== 'boolean'
+      || typeof unit.pricePerUnitPaisa !== 'number'
+      || (typeof unit.barcode !== 'string' && unit.barcode !== null)) return null;
+    units.push({
+      id: unit.id,
+      name: unit.name,
+      conversion_factor: unit.conversionFactor,
+      is_default_sale_unit: unit.isDefaultSaleUnit,
+      price_paisa: unit.pricePerUnitPaisa,
+      barcode: unit.barcode,
+    });
+  }
+  return {
+    id: value.id,
+    code: value.code,
+    barcode: typeof value.barcode === 'string' ? value.barcode : null,
+    brand_name: value.brandName,
+    generic_name: value.genericName,
+    strength: typeof value.strength === 'string' ? value.strength : null,
+    category: typeof value.category === 'string' ? value.category : '',
+    company: typeof value.company === 'string' ? value.company : '',
+    drug_class: value.drugClass as DrugClass,
+    storage_condition: value.storageCondition as StorageCondition,
+    rack_location: typeof value.rackLocation === 'string' ? value.rackLocation : '',
+    min_stock_alert: value.minStockAlert,
+    requires_prescription: value.requiresPrescription === true,
+    is_active: value.isActive,
+    units,
+    stock: value.currentStockSmallestUnit,
+    latest_cost_paisa: typeof value.latestCostPaisa === 'number' ? value.latestCostPaisa : null,
+    margin_percent: typeof value.marginPercent === 'number' ? value.marginPercent : null,
+    nearest_expiry: typeof value.nearestExpiry === 'string' ? value.nearestExpiry : null,
+    mrp_paisa: typeof value.mrpPaisa === 'number' ? value.mrpPaisa : 0,
+    default_unit_conversion: typeof value.defaultUnitConversion === 'number' ? value.defaultUnitConversion : 1,
+  };
 }
 
 function messageFor(error: unknown, fallback: string) {
@@ -455,6 +513,23 @@ function ProductsCatalog({
 
   const loadOptions = useCallback(async () => {
     const client = supabase;
+    if (isDesktopMode()) {
+      const data = await localApiRequest<unknown>('/api/master-data/overview');
+      if (!isRecord(data) || !Array.isArray(data.categories) || !Array.isArray(data.manufacturers)) {
+        throw new Error('The local master-data service returned invalid product options.');
+      }
+      const parseOptions = (items: unknown[]): CategoryOption[] => items.flatMap((item) =>
+        isRecord(item)
+        && typeof item.id === 'string'
+        && typeof item.name === 'string'
+        && item.is_active === true
+          ? [{ id: item.id, name: item.name }]
+          : []);
+      setCategories(parseOptions(data.categories));
+      setBrands(parseOptions(data.manufacturers));
+      setOptionsError('');
+      return;
+    }
     if (!client) throw new Error('Supabase is not configured.');
     const [categoryRows, brandRows] = await Promise.all([
       fetchAllSupabaseRows((from, to) => client.from('categories').select('id,name').eq('is_active', true).order('name').range(from, to)),
@@ -467,7 +542,7 @@ function ProductsCatalog({
 
   const loadProducts = useCallback(async () => {
     const client = supabase;
-    if (!client) {
+    if (!isDesktopMode() && !client) {
       setError('Supabase is not configured.');
       setLoading(false);
       return;
@@ -475,6 +550,49 @@ function ProductsCatalog({
     setLoading(true);
     setError('');
     try {
+      if (isDesktopMode()) {
+        const query = new URLSearchParams({
+          page: String(page),
+          limit: String(PAGE_SIZE),
+          search: search.trim(),
+          category: categoryFilter,
+          brand: brandFilter,
+          drugClass: classFilter,
+          status: activeFilter,
+          lowStockOnly: String(lowStockOnly),
+          sortColumn,
+          sortDirection,
+        });
+        const response = await localApiRequest<unknown>(`/api/inventory/products?${query.toString()}`);
+        if (!isRecord(response)
+          || !Array.isArray(response.products)
+          || typeof response.total !== 'number'
+          || typeof response.canViewCost !== 'boolean'
+          || !isRecord(response.stats)
+          || !response.products.every((product) => parseLocalMedicine(product) !== null)) {
+          throw new Error('The local product service returned invalid product data.');
+        }
+        const stats = response.stats;
+        if (typeof stats.totalActive !== 'number'
+          || typeof stats.lowStock !== 'number'
+          || typeof stats.outOfStock !== 'number'
+          || typeof stats.expiring90 !== 'number'
+          || (stats.stockValueCostPaisa !== null && typeof stats.stockValueCostPaisa !== 'number')) {
+          throw new Error('The local product service returned invalid summary data.');
+        }
+        setTotalCount(response.total);
+        setCanViewCost(response.canViewCost);
+        setOverviewStats({
+          total_active: stats.totalActive,
+          low_stock: stats.lowStock,
+          out_of_stock: stats.outOfStock,
+          expiring_90: stats.expiring90,
+          stock_value_cost_paisa: stats.stockValueCostPaisa,
+        });
+        setMedicines(response.products.map(parseLocalMedicine).filter((product): product is Medicine => product !== null));
+        return;
+      }
+      if (!client) throw new Error('Supabase is not configured.');
       const [listResult, statsResult] = await Promise.all([
         client.rpc('products_list', {
           p_search: search.trim() || null,
@@ -638,8 +756,48 @@ function ProductsCatalog({
     p_page_size: pageSize,
   });
 
+  const localProductQuery = (requestedPage: number, pageSize: number) => new URLSearchParams({
+    page: String(requestedPage),
+    limit: String(pageSize),
+    search: search.trim(),
+    category: categoryFilter,
+    brand: brandFilter,
+    drugClass: classFilter,
+    status: activeFilter,
+    lowStockOnly: String(lowStockOnly),
+    sortColumn,
+    sortDirection,
+  });
+
   const loadFilteredProductsForExport = async () => {
     const client = supabase;
+    if (isDesktopMode()) {
+      const rows: Medicine[] = [];
+      let requestedPage = 1;
+      let expectedCount = 0;
+      do {
+        const response = await localApiRequest<unknown>(
+          `/api/inventory/products?${localProductQuery(requestedPage, 500).toString()}`,
+        );
+        if (!isRecord(response) || !Array.isArray(response.products) || typeof response.total !== 'number') {
+          throw new Error('The local product export service returned an invalid response.');
+        }
+        if (requestedPage === 1) expectedCount = response.total;
+        if (response.total !== expectedCount) {
+          throw new Error('Products changed while the export was being prepared. Retry the export.');
+        }
+        const pageRows = response.products.map(parseLocalMedicine);
+        if (pageRows.some((product) => product === null)) {
+          throw new Error('The local product export service returned invalid product data.');
+        }
+        if (pageRows.length === 0 && rows.length < expectedCount) {
+          throw new Error('The product export ended before all filtered rows were returned.');
+        }
+        rows.push(...pageRows.filter((product): product is Medicine => product !== null));
+        requestedPage += 1;
+      } while (rows.length < expectedCount);
+      return rows;
+    }
     if (!client) throw new Error('Supabase is not configured.');
     const rows: Medicine[] = [];
     let requestedPage = 1;
@@ -751,7 +909,7 @@ function ProductsCatalog({
   };
 
   const prepareImportPreview = async (file: File) => {
-    if (!supabase) {
+    if (!isDesktopMode() && !supabase) {
       setNotice('Supabase is not configured.');
       return;
     }
@@ -761,10 +919,16 @@ function ProductsCatalog({
       const parsedRows = parseProductCsv(await file.text());
       if (parsedRows.length > 2000) throw new Error('CSV import is limited to 2000 product rows.');
       const localPreview = previewProductCsv(parsedRows, []);
-      const { data, error: previewError } = await supabase.rpc('products_import_preview', {
-        rows: localPreview.map(({ line, values }) => ({ ...values, line })),
-      });
-      if (previewError) throw previewError;
+      let data: unknown;
+      const rows = localPreview.map(({ line, values }) => ({ ...values, line }));
+      if (isDesktopMode()) {
+        data = await localApiRequest<unknown>('/api/inventory/products/import-preview', 'POST', { rows });
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const result = await supabase.rpc('products_import_preview', { rows });
+        if (result.error) throw result.error;
+        data = result.data;
+      }
       if (!Array.isArray(data) || data.some((row) => !isRecord(row)
         || typeof row.line !== 'number' || typeof row.duplicate_in_database !== 'boolean')) {
         throw new Error('The import-preview service returned an invalid response.');
@@ -792,7 +956,7 @@ function ProductsCatalog({
   };
 
   const importProducts = async () => {
-    if (!supabase || !importPreview) return;
+    if (!importPreview) return;
     const validRows = importPreview.filter((row) => !skippedLines.includes(row.line) && row.errors.length === 0);
     const rowsToSkip = importPreview.filter((row) => skippedLines.includes(row.line) || row.errors.length > 0)
       .map((row) => skippedLines.includes(row.line) && row.errors.length === 0
@@ -810,18 +974,28 @@ function ProductsCatalog({
     setImporting(true);
     setNotice('');
     try {
-      const { data, error: importError } = await supabase.rpc('products_bulk_import', {
-        rows: validRows.map(({ line, values }) => ({ ...values, line })),
-      });
-      if (importError) throw importError;
+      let data: unknown;
+      if (isDesktopMode()) {
+        data = await localApiRequest<unknown>('/api/inventory/products/import', 'POST', {
+          rows: validRows.map(({ line, values }) => ({ ...values, line })),
+        });
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const result = await supabase.rpc('products_bulk_import', {
+          rows: validRows.map(({ line, values }) => ({ ...values, line })),
+        });
+        if (result.error) throw result.error;
+        data = result.data;
+      }
       dispatchStockChanged();
-      if (!isRecord(data) || typeof data.imported_count !== 'number') {
+      if (!isRecord(data) || typeof (data.imported_count ?? data.importedCount) !== 'number') {
         throw new Error('The import service returned an invalid response.');
       }
+      const importedCount = (data.imported_count ?? data.importedCount) as number;
       setSkippedRows(rowsToSkip);
       await loadProducts();
       setSelectedIds([]);
-      setNotice(`Imported ${data.imported_count} product${data.imported_count === 1 ? '' : 's'}; skipped ${rowsToSkip.length} row${rowsToSkip.length === 1 ? '' : 's'}.`);
+      setNotice(`Imported ${importedCount} product${importedCount === 1 ? '' : 's'}; skipped ${rowsToSkip.length} row${rowsToSkip.length === 1 ? '' : 's'}.`);
       setImportPreview(null);
       setSkippedLines([]);
     } catch (caught) {
@@ -832,21 +1006,33 @@ function ProductsCatalog({
   };
 
   const applyBulkUpdate = async (action: 'category' | 'deactivate', value: string | null = null) => {
-    if (!supabase || selectedIds.length === 0) return;
+    if (selectedIds.length === 0) return;
     setImporting(true);
     setNotice('');
     try {
-      const { data, error: updateError } = await supabase.rpc('products_bulk_update', {
-        ids: selectedIds,
-        action,
-        value,
-      });
-      if (updateError) throw updateError;
+      let data: unknown;
+      if (isDesktopMode()) {
+        data = await localApiRequest<unknown>('/api/inventory/products/bulk-update', 'POST', {
+          ids: selectedIds,
+          action,
+          value,
+        });
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const result = await supabase.rpc('products_bulk_update', {
+          ids: selectedIds,
+          action,
+          value,
+        });
+        if (result.error) throw result.error;
+        data = result.data;
+      }
       dispatchStockChanged();
-      if (typeof data !== 'number') throw new Error('The bulk-update service returned an invalid response.');
+      const updatedCount = typeof data === 'number' ? data : isRecord(data) ? data.updatedCount : null;
+      if (typeof updatedCount !== 'number') throw new Error('The bulk-update service returned an invalid response.');
       setSelectedIds([]);
       setConfirmBulkDeactivate(false);
-      setNotice(`Updated ${data} product${data === 1 ? '' : 's'}.`);
+      setNotice(`Updated ${updatedCount} product${updatedCount === 1 ? '' : 's'}.`);
       await loadProducts();
     } catch (caught) {
       setNotice(messageFor(caught, 'Could not update the selected products.'));
@@ -907,28 +1093,35 @@ function ProductsCatalog({
       setNotice('Products permission is required to make a barcode.');
       return;
     }
-    if (!supabase) {
-      setNotice('Supabase is not configured.');
-      return;
-    }
     setGeneratingBarcodeId(medicine.id);
     setNotice('');
     try {
-      const { data, error: barcodeError } = await supabase.rpc('assign_medicine_barcode', {
-        p_medicine_id: medicine.id,
-        p_barcode: null,
-        p_replace: false,
-      });
-      if (barcodeError) {
-        if (isBarcodeFunctionMissing(barcodeError)) {
-          setNotice('Barcode generation is not enabled on this database yet');
-          return;
+      let barcode: unknown;
+      if (isDesktopMode()) {
+        const response = await localApiRequest<unknown>(
+          `/api/inventory/products/${encodeURIComponent(medicine.id)}/barcode`,
+          'POST',
+        );
+        barcode = isRecord(response) ? response.barcode : null;
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const { data, error: barcodeError } = await supabase.rpc('assign_medicine_barcode', {
+          p_medicine_id: medicine.id,
+          p_barcode: null,
+          p_replace: false,
+        });
+        if (barcodeError) {
+          if (isBarcodeFunctionMissing(barcodeError)) {
+            setNotice('Barcode generation is not enabled on this database yet');
+            return;
+          }
+          throw barcodeError;
         }
-        throw barcodeError;
+        barcode = data;
       }
-      if (typeof data !== 'string' || !data) throw new Error('The barcode service returned an invalid response.');
-      setNotice(`Generated barcode ${data} for ${medicine.brand_name}.`);
-      setViewingMedicine((current) => current?.id === medicine.id ? { ...current, barcode: data } : current);
+      if (typeof barcode !== 'string' || !barcode) throw new Error('The barcode service returned an invalid response.');
+      setNotice(`Generated barcode ${barcode} for ${medicine.brand_name}.`);
+      setViewingMedicine((current) => current?.id === medicine.id ? { ...current, barcode } : current);
       await loadProducts();
     } catch (caught) {
       setNotice(messageFor(caught, `Could not generate a barcode for ${medicine.brand_name}.`));
@@ -942,10 +1135,6 @@ function ProductsCatalog({
       setNotice('Products permission is required to make barcodes.');
       return;
     }
-    if (!supabase) {
-      setNotice('Supabase is not configured.');
-      return;
-    }
     const ids = selectedIds.length > 0
       ? selectedIds
       : medicines.filter((medicine) => !medicine.barcode).map((medicine) => medicine.id);
@@ -956,15 +1145,22 @@ function ProductsCatalog({
     setImporting(true);
     setNotice('');
     try {
-      const { data, error: bulkError } = await supabase.rpc('assign_missing_barcodes', {
-        p_medicine_ids: ids,
-      });
-      if (bulkError) {
-        if (isBarcodeFunctionMissing(bulkError)) {
-          setNotice('Barcode generation is not enabled on this database yet');
-          return;
+      let data: unknown;
+      if (isDesktopMode()) {
+        data = await localApiRequest<unknown>('/api/inventory/products/barcodes', 'POST', { ids });
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const result = await supabase.rpc('assign_missing_barcodes', {
+          p_medicine_ids: ids,
+        });
+        if (result.error) {
+          if (isBarcodeFunctionMissing(result.error)) {
+            setNotice('Barcode generation is not enabled on this database yet');
+            return;
+          }
+          throw result.error;
         }
-        throw bulkError;
+        data = result.data;
       }
       if (!isRecord(data)) {
         throw new Error('The missing-barcode service returned an invalid response.');
@@ -1022,7 +1218,6 @@ function ProductsCatalog({
 
   const saveProduct = async (event: FormEvent) => {
     event.preventDefault();
-    if (!supabase) return setNotice('Supabase is not configured.');
     const minStock = Number(form.min_stock_alert);
     const units = form.units.map((unit) => ({
       ...(unit.id ? { id: unit.id } : {}),
@@ -1047,26 +1242,58 @@ function ProductsCatalog({
     setSaving(true);
     setNotice('');
     try {
-      const { error: saveError } = await supabase.rpc('save_medicine', {
-        p_medicine_id: editing?.id ?? null,
-        p_values: {
+      if (isDesktopMode()) {
+        const categoryId = categories.find((item) => item.name === form.category)?.id;
+        const brandId = brands.find((item) => item.name === form.company)?.id;
+        if (!categoryId || !brandId) {
+          throw new Error('Choose an existing category and manufacturer before saving.');
+        }
+        await localApiRequest('/api/inventory/products', 'POST', {
+          id: editing?.id,
           code: form.code.trim(),
           barcode: form.barcode.trim() || null,
-          brand_name: form.brand_name.trim(),
-          generic_name: form.generic_name.trim(),
+          brandName: form.brand_name.trim(),
+          genericName: form.generic_name.trim(),
           strength: form.strength.trim() || null,
-          category: form.category,
-          company: form.company,
-          drug_class: form.drug_class,
-          storage_condition: form.storage_condition,
-          rack_location: form.rack_location.trim(),
-          min_stock_alert: minStock,
-          requires_prescription: form.requires_prescription,
-          is_active: editing?.is_active ?? true,
-        },
-        p_units: units,
-      });
-      if (saveError) throw saveError;
+          categoryId,
+          brandId,
+          drugClass: form.drug_class,
+          storageCondition: form.storage_condition,
+          rackLocation: form.rack_location.trim(),
+          minStockAlert: minStock,
+          requiresPrescription: form.requires_prescription,
+          units: units.map((unit) => ({
+            ...('id' in unit ? { id: unit.id } : {}),
+            name: unit.name,
+            conversionFactor: unit.conversion_factor,
+            isDefaultSaleUnit: unit.is_default_sale_unit,
+            pricePerUnitPaisa: unit.price_paisa,
+            barcode: unit.barcode,
+          })),
+        });
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const { error: saveError } = await supabase.rpc('save_medicine', {
+          p_medicine_id: editing?.id ?? null,
+          p_values: {
+            code: form.code.trim(),
+            barcode: form.barcode.trim() || null,
+            brand_name: form.brand_name.trim(),
+            generic_name: form.generic_name.trim(),
+            strength: form.strength.trim() || null,
+            category: form.category,
+            company: form.company,
+            drug_class: form.drug_class,
+            storage_condition: form.storage_condition,
+            rack_location: form.rack_location.trim(),
+            min_stock_alert: minStock,
+            requires_prescription: form.requires_prescription,
+            is_active: editing?.is_active ?? true,
+          },
+          p_units: units,
+        });
+        if (saveError) throw saveError;
+      }
       dispatchStockChanged();
       setShowForm(false);
       setNotice(editing ? 'Product updated.' : 'Product added.');
@@ -1079,19 +1306,24 @@ function ProductsCatalog({
   };
 
   const changeProductStatus = async (medicine: Medicine, active: boolean) => {
-    if (!supabase) {
-      setNotice('Supabase is not configured.');
-      return;
-    }
     setImporting(true);
     setNotice('');
     try {
-      const { error: updateError } = await supabase.rpc('products_bulk_update', {
-        ids: [medicine.id],
-        action: active ? 'activate' : 'deactivate',
-        value: null,
-      });
-      if (updateError) throw updateError;
+      if (isDesktopMode()) {
+        await localApiRequest('/api/inventory/products/bulk-update', 'POST', {
+          ids: [medicine.id],
+          action: active ? 'activate' : 'deactivate',
+          value: null,
+        });
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const { error: updateError } = await supabase.rpc('products_bulk_update', {
+          ids: [medicine.id],
+          action: active ? 'activate' : 'deactivate',
+          value: null,
+        });
+        if (updateError) throw updateError;
+      }
       dispatchStockChanged();
       setPendingStatusChange(null);
       setNotice(`${medicine.brand_name} ${active ? 'activated' : 'deactivated'}.`);

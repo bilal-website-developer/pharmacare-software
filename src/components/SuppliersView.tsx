@@ -3,6 +3,7 @@ import { BookOpen, ChevronDown, ChevronUp, Plus, RefreshCw, Save, Truck, X } fro
 import { supabase } from '../utils/supabase';
 import { DEMO_DATA_CHANGED_EVENT } from '../data/demoDataManager';
 import { TableExportButtons } from './TableExportButtons';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 
 interface Supplier {
   id: string;
@@ -85,10 +86,36 @@ function SupplierLedger({ supplier }: { supplier: Supplier }) {
   const [newCredit, setNewCredit] = useState('');
 
   const load = useCallback(async () => {
-    if (!supabase) return;
+    if (!isDesktopMode() && !supabase) return;
     setLoading(true);
     setError('');
     try {
+      if (isDesktopMode()) {
+        const rows = await localApiRequest<unknown>(`/api/suppliers/${encodeURIComponent(supplier.id)}/ledger`);
+        if (!Array.isArray(rows) || !rows.every((row) =>
+          typeof row === 'object' && row !== null
+          && typeof (row as Record<string, unknown>).id === 'string'
+          && typeof (row as Record<string, unknown>).date === 'string'
+          && typeof (row as Record<string, unknown>).description === 'string'
+          && typeof (row as Record<string, unknown>).debit === 'number'
+          && typeof (row as Record<string, unknown>).credit === 'number'
+          && typeof (row as Record<string, unknown>).balance === 'number'
+        )) throw new Error('The local supplier ledger returned invalid data.');
+        setEntries(rows.map((row) => {
+          const entry = row as Record<string, unknown>;
+          return {
+            id: entry.id as string,
+            supplier_id: supplier.id,
+            date: entry.date as string,
+            description: entry.description as string,
+            debit: entry.debit as number,
+            credit: entry.credit as number,
+            balance: entry.balance as number,
+          };
+        }));
+        return;
+      }
+      if (!supabase) throw new Error('Supabase is not configured.');
       // Try to load from supplier_ledger table if it exists
       const { data, error: qErr } = await supabase
         .from('supplier_ledger')
@@ -127,7 +154,7 @@ function SupplierLedger({ supplier }: { supplier: Supplier }) {
     if (open) void load();
   }, [open, load]);
 
-  const handleAddEntry = (e: React.FormEvent) => {
+  const handleAddEntry = async (e: React.FormEvent) => {
     e.preventDefault();
     const entry: LedgerEntry = {
       id: crypto.randomUUID(),
@@ -138,6 +165,24 @@ function SupplierLedger({ supplier }: { supplier: Supplier }) {
       credit: Math.round(parseFloat(newCredit || '0') * 100),
       balance: 0,
     };
+    if (isDesktopMode()) {
+      try {
+        await localApiRequest(`/api/suppliers/${encodeURIComponent(supplier.id)}/ledger`, 'POST', {
+          date: entry.date,
+          description: entry.description,
+          debit: entry.debit,
+          credit: entry.credit,
+        });
+        setNewDesc('');
+        setNewDebit('');
+        setNewCredit('');
+        setAddOpen(false);
+        await load();
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : 'Could not save supplier ledger entry.');
+      }
+      return;
+    }
     setEntries((prev) => {
       let running = prev.length > 0 ? prev[prev.length - 1].balance : 0;
       running += entry.debit - entry.credit;
@@ -273,7 +318,7 @@ export const SuppliersView: React.FC = () => {
   const editingSupplier = suppliers.find((item) => item.id === editingId);
 
   const loadSuppliers = useCallback(async () => {
-    if (!supabase) {
+    if (!isDesktopMode() && !supabase) {
       setError('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the app.');
       setLoading(false);
       return;
@@ -282,6 +327,30 @@ export const SuppliersView: React.FC = () => {
     setLoading(true);
     setError('');
     try {
+      if (isDesktopMode()) {
+        const data = await localApiRequest<unknown>('/api/suppliers');
+        if (!Array.isArray(data) || !data.every((row) =>
+          typeof row === 'object' && row !== null
+          && typeof (row as Record<string, unknown>).id === 'string'
+          && typeof (row as Record<string, unknown>).name === 'string'
+          && typeof (row as Record<string, unknown>).isActive === 'boolean'
+        )) throw new Error('The local supplier service returned invalid data.');
+        setSuppliers(data.map((row) => {
+          const item = row as Record<string, unknown>;
+          return {
+            id: item.id as string,
+            name: item.name as string,
+            contact: typeof item.contact === 'string' ? item.contact : '',
+            address: typeof item.address === 'string' ? item.address : '',
+            licence_or_tax_number: typeof item.licence_or_tax_number === 'string' ? item.licence_or_tax_number : '',
+            payment_terms: typeof item.payment_terms === 'string' ? item.payment_terms : 'CASH',
+            is_active: item.isActive as boolean,
+            created_at: typeof item.created_at === 'string' ? item.created_at : '',
+          };
+        }));
+        return;
+      }
+      if (!supabase) throw new Error('Supabase is not configured.');
       const { data, error: queryError } = await supabase
         .from('suppliers')
         .select(SUPPLIER_COLUMNS)
@@ -314,7 +383,7 @@ export const SuppliersView: React.FC = () => {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!supabase) {
+    if (!isDesktopMode() && !supabase) {
       setError('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the app.');
       return;
     }
@@ -337,15 +406,27 @@ export const SuppliersView: React.FC = () => {
     };
 
     try {
-      const { error: saveError } = await supabase.rpc('save_supplier', {
-        p_supplier_id: editingId,
-        p_name: values.name,
-        p_contact: values.contact,
-        p_address: values.address,
-        p_licence_or_tax_number: values.licence_or_tax_number,
-        p_payment_terms: values.payment_terms,
-      });
-      if (saveError) throw saveError;
+      if (isDesktopMode()) {
+        await localApiRequest('/api/suppliers', 'POST', {
+          id: editingId ?? undefined,
+          name: values.name,
+          contact: values.contact,
+          address: values.address,
+          licence_or_tax_number: values.licence_or_tax_number,
+          payment_terms: values.payment_terms,
+        });
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const { error: saveError } = await supabase.rpc('save_supplier', {
+          p_supplier_id: editingId,
+          p_name: values.name,
+          p_contact: values.contact,
+          p_address: values.address,
+          p_licence_or_tax_number: values.licence_or_tax_number,
+          p_payment_terms: values.payment_terms,
+        });
+        if (saveError) throw saveError;
+      }
       setNotice(editingId ? 'Supplier updated.' : 'Supplier added.');
       resetForm();
       await loadSuppliers();
@@ -371,7 +452,7 @@ export const SuppliersView: React.FC = () => {
   };
 
   const deactivateSupplier = async (supplier: Supplier) => {
-    if (!supabase) {
+    if (!isDesktopMode() && !supabase) {
       setError('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the app.');
       return;
     }
@@ -380,10 +461,15 @@ export const SuppliersView: React.FC = () => {
     setError('');
     setNotice('');
     try {
-      const { error: deactivateError } = await supabase.rpc('deactivate_supplier', {
-        p_supplier_id: supplier.id,
-      });
-      if (deactivateError) throw deactivateError;
+      if (isDesktopMode()) {
+        await localApiRequest(`/api/suppliers/${encodeURIComponent(supplier.id)}/status`, 'PUT', { isActive: false });
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const { error: deactivateError } = await supabase.rpc('deactivate_supplier', {
+          p_supplier_id: supplier.id,
+        });
+        if (deactivateError) throw deactivateError;
+      }
 
       setSuppliers((current) =>
         current.map((item) => item.id === supplier.id ? { ...item, is_active: false } : item)
@@ -395,7 +481,7 @@ export const SuppliersView: React.FC = () => {
   };
 
   const activateSupplier = async (supplier: Supplier) => {
-    if (!supabase) {
+    if (!isDesktopMode() && !supabase) {
       setError('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the app.');
       return;
     }
@@ -403,10 +489,15 @@ export const SuppliersView: React.FC = () => {
     setError('');
     setNotice('');
     try {
-      const { error: activateError } = await supabase.rpc('activate_supplier', {
-        p_supplier_id: supplier.id,
-      });
-      if (activateError) throw activateError;
+      if (isDesktopMode()) {
+        await localApiRequest(`/api/suppliers/${encodeURIComponent(supplier.id)}/status`, 'PUT', { isActive: true });
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const { error: activateError } = await supabase.rpc('activate_supplier', {
+          p_supplier_id: supplier.id,
+        });
+        if (activateError) throw activateError;
+      }
 
       setSuppliers((current) =>
         current.map((item) => item.id === supplier.id ? { ...item, is_active: true } : item)
@@ -452,7 +543,7 @@ export const SuppliersView: React.FC = () => {
             <RefreshCw aria-hidden="true" className="h-4 w-4" />
             Refresh
           </button>
-          {supabase && (
+          {(isDesktopMode() || supabase) && (
             <button
               type="button"
               onClick={() => { setForm(EMPTY_FORM); setEditingId(null); setShowForm(true); setError(''); setNotice(''); }}
@@ -477,7 +568,7 @@ export const SuppliersView: React.FC = () => {
       )}
 
       {/* ── Add / Edit Form — shown only when showForm is true ─────────── */}
-      {showForm && supabase && (
+      {showForm && (isDesktopMode() || supabase) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <form
             onSubmit={handleSubmit}

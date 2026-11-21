@@ -5,6 +5,7 @@ import {
   saveCustomerDisplayAlternatives,
 } from '../utils/customerDisplay';
 import { supabase } from '../utils/supabase';
+import { isDesktopMode } from '../services/localApi';
 import {
   applyUserDisplayPreferences,
   readUserDisplayPreferences,
@@ -46,6 +47,10 @@ export function UserPreferencesPanel({
   useEffect(() => {
     let active = true;
     const checkConnection = async () => {
+      if (isDesktopMode()) {
+        if (active) setConnectionStatus('offline');
+        return;
+      }
       if (!navigator.onLine) {
         if (active) setConnectionStatus('offline');
         return;

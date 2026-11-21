@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { startServer } from '../../../local-backend/src/server';
+import { getWindowIconPath } from './windowIcon';
 import {
   backupDatabase,
   createPortableBackup,
@@ -28,8 +29,11 @@ let isQuitting = false;
 const localAuthToken = crypto.randomBytes(32).toString('hex');
 const localJwtSecret = crypto.randomBytes(48).toString('base64url');
 const localApiPort = 0;
-const allowedApiPath = /^\/api\/(?:auth|license|pos|inventory|purchases|suppliers|customers|cashbook|reports|settings|print-requests|backup)(?:\/[A-Za-z0-9._/-]+)?(?:\?[A-Za-z0-9_=&.%+-]*)?$/;
+const APP_USER_MODEL_ID = 'com.pharmacare.desktop';
+const allowedApiPath = /^\/api\/(?:auth|license|pos|inventory|purchases|suppliers|customers|cashbook|reports|settings|print-requests|master-data|trash|notifications|preferences|backup)(?:\/[A-Za-z0-9._/-]+)?(?:\?[A-Za-z0-9_=&.%+-]*)?$/;
 const allowedMethods = new Set(['GET', 'POST', 'PUT', 'DELETE']);
+
+app.setAppUserModelId(APP_USER_MODEL_ID);
 
 function getDataRoot(): string {
   return app.getPath('userData');
@@ -536,6 +540,7 @@ function createWindow(): void {
     height: 900,
     minWidth: 1024,
     minHeight: 720,
+    icon: getWindowIconPath(app.isPackaged, app.getAppPath(), process.resourcesPath),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

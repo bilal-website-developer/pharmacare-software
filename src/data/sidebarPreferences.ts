@@ -2,6 +2,7 @@ import { canAccessPage } from '../permissions';
 import { UserRole } from '../types/pharmacy';
 import { isSidebarPageKey, SIDEBAR_PAGES, type SidebarPageKey } from '../components/sidebarPages';
 import { supabase } from '../utils/supabase';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 
 export interface SidebarPreferences {
   favoritePageKeys: SidebarPageKey[];
@@ -19,6 +20,27 @@ export async function loadSidebarPreferences(
   visiblePageKeys: readonly SidebarPageKey[],
 ): Promise<SidebarPreferences> {
   const empty: SidebarPreferences = { favoritePageKeys: [], tipDismissed: false, loadFailed: false };
+  if (isDesktopMode()) {
+    try {
+      const saved = await localApiRequest<{ favoritePageKeys?: unknown; tipDismissed?: unknown }>('/api/preferences/sidebar');
+      if (!Array.isArray(saved.favoritePageKeys)
+        || !saved.favoritePageKeys.every((key) => typeof key === 'string')
+        || typeof saved.tipDismissed !== 'boolean') {
+        throw new Error('The local service returned invalid sidebar preferences.');
+      }
+      const visible = new Set(visiblePageKeys);
+      const favoritePageKeys = [...new Set(saved.favoritePageKeys.filter(
+        (key): key is SidebarPageKey => isSidebarPageKey(key) && visible.has(key),
+      ))].slice(0, 8);
+      if (favoritePageKeys.length !== saved.favoritePageKeys.length) {
+        await saveSidebarPreferences(favoritePageKeys, saved.tipDismissed);
+      }
+      return { favoritePageKeys, tipDismissed: saved.tipDismissed, loadFailed: false };
+    } catch (error) {
+      console.warn('Could not load local sidebar preferences:', error);
+      return { ...empty, loadFailed: true };
+    }
+  }
   if (!supabase) {
     return { ...empty, loadFailed: true };
   }
@@ -99,6 +121,20 @@ export async function saveSidebarPreferences(
   pageKeys: readonly string[],
   tipDismissed: boolean,
 ): Promise<void> {
+  if (isDesktopMode()) {
+    if (
+      pageKeys.length > 8
+      || new Set(pageKeys).size !== pageKeys.length
+      || pageKeys.some((key) => !isSidebarPageKey(key))
+    ) {
+      throw new RangeError('The sidebar pin list is invalid.');
+    }
+    await localApiRequest('/api/preferences/sidebar', 'PUT', {
+      favoritePageKeys: [...pageKeys],
+      tipDismissed,
+    });
+    return;
+  }
   if (!supabase) throw new Error('Supabase is not configured.');
   if (
     pageKeys.length > 8

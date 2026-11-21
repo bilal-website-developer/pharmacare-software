@@ -39,6 +39,14 @@ export function registerSettingsRoutes(app: FastifyInstance, db: Database.Databa
           paperSize: '80mm',
           memoSettings: {},
           operationalSettings: DEFAULT_OPERATIONAL_SETTINGS,
+          approvalSettings: { autoApprovePrintRequests: false, autoProcessReturns: false },
+          receiptQrSettings: {
+            publicReceiptsEnabled: false,
+            linkLifetimeDays: 30,
+            showMedicineNames: false,
+            qrPlacement: 'footer',
+            qrBaseUrl: '',
+          },
         });
       }
 
@@ -51,6 +59,8 @@ export function registerSettingsRoutes(app: FastifyInstance, db: Database.Databa
         receiptTemplate: row.receipt_template,
         paperSize: row.paper_size,
         memoSettings: JSON.parse(row.memo_settings || '{}'),
+        approvalSettings: JSON.parse(row.approval_settings || '{"autoApprovePrintRequests":false,"autoProcessReturns":false}'),
+        receiptQrSettings: JSON.parse(row.receipt_qr_settings || '{"publicReceiptsEnabled":false,"linkLifetimeDays":30,"showMedicineNames":false,"qrPlacement":"footer","qrBaseUrl":""}'),
         operationalSettings: savedOperationalSettings.billingTemplate
           ? savedOperationalSettings
           : DEFAULT_OPERATIONAL_SETTINGS,
@@ -82,27 +92,49 @@ export function registerSettingsRoutes(app: FastifyInstance, db: Database.Databa
             paper_size = COALESCE(?, paper_size),
             memo_settings = COALESCE(?, memo_settings),
             operational_settings = COALESCE(?, operational_settings),
+            approval_settings = COALESCE(?, approval_settings),
+            receipt_qr_settings = COALESCE(?, receipt_qr_settings),
             updated_at = ?
         WHERE id = 1
       `).run(
-        body.shopName || null,
-        body.phone || null,
-        body.address || null,
-        body.logoPath || null,
+        body.shopName !== undefined ? body.shopName : null,
+        body.phone !== undefined ? body.phone : null,
+        body.address !== undefined ? body.address : null,
+        body.logoPath !== undefined ? body.logoPath : null,
         body.receiptTemplate || null,
         body.paperSize || null,
         body.memoSettings ? JSON.stringify(body.memoSettings) : null,
         body.operationalSettings ? JSON.stringify(body.operationalSettings) : null,
+        body.approvalSettings ? JSON.stringify(body.approvalSettings) : null,
+        body.receiptQrSettings ? JSON.stringify(body.receiptQrSettings) : null,
         now
       );
 
-      const savedSettings = db.prepare('SELECT operational_settings FROM shop_settings WHERE id = 1').get() as {
+      const savedSettings = db.prepare(`
+        SELECT shop_name, phone, address, logo_path, operational_settings,
+               approval_settings, receipt_qr_settings
+        FROM shop_settings WHERE id = 1
+      `).get() as {
+        shop_name: string;
+        phone: string;
+        address: string;
+        logo_path: string;
         operational_settings: string;
+        approval_settings: string;
+        receipt_qr_settings: string;
       };
       return reply.send({
         success: true,
         message: 'Settings saved successfully.',
         operationalSettings: JSON.parse(savedSettings.operational_settings || '{}'),
+        approvalSettings: JSON.parse(savedSettings.approval_settings || '{}'),
+        receiptQrSettings: JSON.parse(savedSettings.receipt_qr_settings || '{}'),
+        name: savedSettings.shop_name,
+        shopName: savedSettings.shop_name,
+        phone: savedSettings.phone,
+        address: savedSettings.address,
+        logoPath: savedSettings.logo_path,
+        logo_path: savedSettings.logo_path,
       });
     } catch (error: any) {
       return reply.status(400).send({ error: error.message });

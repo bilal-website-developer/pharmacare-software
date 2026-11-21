@@ -1,0 +1,55 @@
+# Desktop Data-Path Parity Gaps
+
+This is a source inventory of Supabase, browser-storage, demo, and in-memory paths reachable from the desktop renderer, based on the `src/` scan performed on 2026-11-21. A web-only Supabase branch is still listed when its containing screen ships in the desktop bundle. Local adapters take precedence only where explicitly noted; the desktop Supabase module resolves to `null`, so an unadapted branch is a functional gap, not an online fallback.
+
+## Supabase call sites
+
+| Screen / workflow | Source file(s) | Tables, RPCs, or service | Desktop status |
+|---|---|---|---|
+| App shell, session refresh, pending print count | `src/App.tsx`, `src/utils/auth.ts` | `auth.getUser`, `auth.signOut`, `current_shop_access`, `current_shop_profile`, `pending_print_count` | Local session and print-count paths exist. Demo markers/entry preferences remain browser-backed. |
+| Login | `src/components/LoginView.tsx` | `auth.signInWithPassword` | Desktop login uses local-auth IPC/API; Supabase branch is web-only. |
+| Receipt QR settings and public receipt resolution | `src/utils/receiptLinks.ts`, `src/components/PublicReceiptPage.tsx` | `get_receipt_qr_settings`, `update_receipt_qr_settings`, `get_or_create_receipt_link`, `revoke_receipt_link`, `sale_id_for_receipt_invoice`, public receipt lookup | Public QR links are unsupported in the offline desktop build. Desktop settings prevent enabling them; public receipt lookup remains a web/online path. |
+| Print requests | `src/utils/printWorkflow.ts`, `src/components/PrintRequestsAdminView.tsx`, `src/components/MyPrintRequestsView.tsx` | `request_print_v2`, `claim_auto_approved_print_request`, print-request decision/edit/printed RPCs | Local SQLite adapters cover creation, lists, decisions, edits, printing state, and pending counts. Automatic approval and remote QR links are unavailable locally. |
+| Approval automation settings | `src/data/approvalAutomation.ts` | `get_approval_automation_settings`, `update_approval_automation_settings` | Desktop uses local shop settings; web branch retains Supabase. |
+| Stock alerts | `src/data/stockAlerts.ts`, `src/components/StockAlertBell.tsx` | `stock_alerts_summary` | Summary uses local notifications/stock API. Seen-alert IDs are still in localStorage. |
+| Sidebar preferences | `src/data/sidebarPreferences.ts`, `src/components/UserPreferencesPanel.tsx` | `save_sidebar_preferences`, `auth.getUser` | Favorite pages persist through local `user_preferences`; other appearance preferences remain browser-local. |
+| Shop operating/receipt settings | `src/data/shopSettings.ts`, `src/components/SettingsView.tsx` | `current_shop_settings`, `update_current_shop_settings_v2` | Local shop-settings API handles supported fields. Receipt QR and some auxiliary UI preferences remain unavailable or browser-local. |
+| Shop profile and logo | `src/data/shopProfile.ts` | `update_current_shop_profile`, `prepare_current_shop_logo_upload`, Supabase Storage | Profile fields have a local backend path; Supabase Storage upload has no equivalent and is not portable local file storage. |
+| POS catalog | `src/data/posCatalog.ts` | `pos_catalog` | Local inventory/catalog API is used in desktop mode. |
+| Sales, customer accounts, and payments | `src/data/sales.ts` | Generic RPC helper; `post_sale_with_payment_details`, `pos_customers`, `customer_accounts_summary`, `save_customer`, `record_customer_payment`, sales-history and profit-summary RPCs | POS checkout, customers, payments, sales history, and profit summary have local adapters. Return workflows routed through this generic helper do not. |
+| Sale returns | `src/data/saleReturns.ts`, `src/components/returns/SaleReturnsPanel.tsx` | `resolve_receipt_link`, `get_return_policy_settings`, `update_return_policy_settings`, `sale_for_return`, `request_sale_return`, `pending_sale_returns`, `process_sale_return`, `reject_sale_return` | **Not adapted.** Local schema has basic completed-return tables and a simpler report endpoint, but the request/review workflow, policy, and receipt-token lookup do not have compatible local routes. |
+| Demo-data manager | `src/data/demoDataManager.ts`, `src/components/SettingsView.tsx` | `save_medicine`, `products_bulk_update`, `purchase_catalog`, `activate_supplier`, `save_supplier`, `post_purchase`, `deactivate_supplier` | Tenant demo controls are hidden/disabled in the desktop UI; the data module itself remains web-only and must not be used by desktop actions. |
+| Categories, manufacturers, medicine units | `src/components/MasterDataView.tsx` | `medicine_units`, `medicines`, category/brand/unit save RPCs | Local master-data routes cover categories, manufacturers, and units; Supabase reads/writes remain for web mode. |
+| Products and product units | `src/components/InventoryScreen.tsx` | `categories`, `brands`, `medicine_units`; `products_import_preview`, `products_bulk_import`, `products_bulk_update`, `assign_medicine_barcode`, `assign_missing_barcodes`, `save_medicine` | Local listing, product save/edit, import preview/import, bulk actions, and barcode routes exist. Re-test full UI/import/export workflows before release. |
+| Stock inventory | `src/components/inventory/StockInventory.tsx` | Stock/batch and adjustment RPC-shaped operations | Local batch, overview, and adjustment routes exist. Export and role coverage still need end-to-end acceptance. |
+| Purchase entry | `src/components/StockPurchaseView.tsx` | `purchase_catalog`, `suppliers`, `post_purchase` | Local catalog, supplier list, and purchase-post APIs are wired. Draft purchase content remains in browser localStorage. |
+| Purchase history | `src/components/PurchaseHistoryView.tsx` | `purchase_history`, `purchase_detail`, `void_purchase` | Local list/detail/void/export paths exist; verify full filtering and safe void rules through UI acceptance. |
+| Suppliers | `src/components/SuppliersView.tsx` | `save_supplier`, `deactivate_supplier`, `activate_supplier` | Local CRUD/list routes are wired. Full UI edit/delete/reload acceptance remains unverified. |
+| Users | `src/components/ManageUsersView.tsx` | User-management Edge Function / profile RPCs | Local user routes and UI wiring exist. Role-by-role permission and lifecycle acceptance remains incomplete. |
+| Trash Bin | `src/components/TrashBinView.tsx` | `trash_bin_events_list`, `restore_trash_medicine`, `restore_trash_supplier`, `trash_bin_permanently_delete` | Local trash routes cover selected entities/actions; parity and destructive-action acceptance remain incomplete. |
+| Shop administration | `src/components/ShopsView.tsx` | Supabase Auth/database shop and account APIs | Super Admin Shops is a web/central administration workflow and is not a local shop operation. Keep it unavailable in the desktop shop shell. |
+| Cross-screen table paging | `src/utils/fetchAllSupabaseRows.ts` | Supabase `.range()` pagination helper | Used by web branches of inventory/master-data screens. Desktop adapters must not call this helper. |
+
+## Browser and in-memory persistence still present
+
+| Screen / workflow | Source file(s) | Remaining persistence | Desktop status |
+|---|---|---|---|
+| Sidebar collapse and demo/session markers | `src/App.tsx`, `src/utils/demoPreview.ts`, `src/utils/roleDemoSandbox.ts` | localStorage/sessionStorage | User-specific sidebar collapse and demo markers remain local to the renderer; demo workspace is not production pharmacy storage. |
+| Appearance and customer-display preferences | `src/utils/userDisplayPreferences.ts`, `src/utils/customerDisplay.ts`, `src/components/UserPreferencesPanel.tsx` | localStorage | Still device/browser-local; not synchronized or included in backup. |
+| Shop profile/settings fallbacks | `src/utils/storeSettings.ts`, `src/components/SettingsView.tsx` | localStorage | Some web/legacy settings fallbacks remain; do not treat them as authoritative desktop settings. |
+| Purchase drafts | `src/components/StockPurchaseView.tsx` | localStorage | Not backed up or shared across devices. |
+| Product saved filters/view mode | `src/components/InventoryScreen.tsx` | localStorage | UI preference only, not business data. |
+| Stock-alert acknowledgements | `src/components/StockAlertBell.tsx` | localStorage | Acknowledgement state is device-local. |
+| POS held bills | `src/utils/heldBills.ts`, `src/components/POSBillingView.tsx` | localStorage/component state | Not proven to persist through app restart in desktop mode. |
+| Receipt settings and print rendering | `src/utils/receipt.ts`, `src/components/TemplatePreviewModal.tsx` | localStorage/window printing | Local shop settings and print requests exist, but hardware/thermal printer acceptance is outstanding. |
+| Cash Book and dashboard | `src/App.tsx`, `src/components/CashBookScreen.tsx`, `src/components/DashboardView.tsx` | React state or sample data in remaining branches | Cash Book expense save/reload and dashboard summary local paths were added; inspect any page-specific widgets before relying on them. |
+| Public receipt language | `src/utils/publicReceipt.ts` | localStorage | Web-only public receipt preference. |
+| Install-prompt dismissal | `src/utils/installPrompt.ts` | localStorage | Browser/PWA-only preference. |
+
+## Release guardrails and follow-up
+
+- The desktop build aliases `src/utils/supabase.ts` to `src/services/desktopSupabaseStub.ts`; this prevents a real Supabase client from being constructed but does not make an unadapted screen work.
+- The shared `callSupabaseRpc` helper now fails clearly in desktop mode before touching the null client, with a regression test. This is a fail-fast safety guard, not a local adapter; the calling feature remains unsupported until its local route is implemented.
+- Treat every row marked **Not adapted**, and every localStorage/in-memory row above, as a parity/release gate. Do not claim full offline operation until a desktop route or an intentional disabled-state test covers it.
+- The icon checker is a separate build guard and validates the transparent 512px PNG, all seven requested ICO frames, both development/packaged icon paths, AppUserModelID, and electron-builder icon settings.
+- Next highest-priority work: implement and test the complete local sale-return request/review workflow; add automated desktop screen/API coverage; migrate remaining settings and transient POS/purchase state; verify filtered exports for every required table; and run packaged role-by-role workflows.

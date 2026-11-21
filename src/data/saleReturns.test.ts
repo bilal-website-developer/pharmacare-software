@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { callSupabaseRpc } from './sales';
 import { isReturnSubmission } from './saleReturns';
 
 test('accepts pending returns and server-completed automatic quarantine returns', () => {
@@ -25,6 +26,24 @@ test('accepts pending returns and server-completed automatic quarantine returns'
       refundPaisa: 2500,
     }],
   }), true);
+});
+
+test('does not access the null Supabase client from desktop RPC paths', async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { pharmaAPI: {} },
+  });
+
+  try {
+    await assert.rejects(
+      callSupabaseRpc('sale_for_return', undefined, 'Could not load return data.', (_value): _value is true => true),
+      /does not have a local desktop backend route/,
+    );
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  }
 });
 
 test('does not accept an untagged or malformed completed return submission', () => {

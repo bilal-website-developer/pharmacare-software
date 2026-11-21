@@ -7,6 +7,7 @@ import {
 } from '../utils/shopLogo';
 import { supabase, supabaseUrl } from '../utils/supabase';
 import type { ShopProfile } from '../utils/auth';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 
 export type ShopProfileUpdate = Pick<ShopProfile, 'name' | 'phone' | 'address' | 'logoPath'>;
 
@@ -15,21 +16,31 @@ function parseShopProfile(value: unknown): ShopProfile {
     throw new Error('The server returned an invalid shop profile.');
   }
   const profile = value as Record<string, unknown>;
+  const logoPath = profile.logo_path ?? profile.logoPath;
   if (typeof profile.name !== 'string'
     || typeof profile.phone !== 'string'
     || typeof profile.address !== 'string'
-    || (profile.logo_path !== null && typeof profile.logo_path !== 'string')) {
+    || (logoPath !== null && typeof logoPath !== 'string' && logoPath !== undefined)) {
     throw new Error('The server returned an incomplete shop profile.');
   }
   return {
     name: profile.name,
     phone: profile.phone,
     address: profile.address,
-    logoPath: profile.logo_path ?? '',
+    logoPath: typeof logoPath === 'string' ? logoPath : '',
   };
 }
 
 export async function updateCurrentShopProfile(profile: ShopProfileUpdate): Promise<ShopProfile> {
+  if (isDesktopMode()) {
+    const result = await localApiRequest<unknown>('/api/settings/shop', 'PUT', {
+      shopName: profile.name,
+      phone: profile.phone,
+      address: profile.address,
+      logoPath: profile.logoPath,
+    });
+    return parseShopProfile(result);
+  }
   if (!supabase) throw new Error('Supabase is not configured; shop profile could not be saved.');
   const { data, error } = await supabase.rpc('update_current_shop_profile', {
     p_name: profile.name,
@@ -44,6 +55,18 @@ export async function updateCurrentShopProfile(profile: ShopProfileUpdate): Prom
 }
 
 export async function uploadCurrentShopLogo(file: File): Promise<string> {
+  if (isDesktopMode()) {
+    const fileError = shopLogoFileError(file);
+    if (fileError) throw new Error(fileError);
+    const extension = shopLogoFileExtension(file.type);
+    if (!extension) throw new Error('Choose a PNG, JPEG, or WebP image.');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+    }
+    return `data:${file.type};base64,${btoa(binary)}`;
+  }
   if (!supabase || !supabaseUrl) throw new Error('Supabase is not configured; shop logo could not be uploaded.');
   const fileError = shopLogoFileError(file);
   if (fileError) throw new Error(fileError);
@@ -74,6 +97,7 @@ export async function uploadCurrentShopLogo(file: File): Promise<string> {
 }
 
 export async function removeCurrentShopLogo(logoUrl: string): Promise<void> {
+  if (isDesktopMode()) return;
   if (!supabase || !supabaseUrl) throw new Error('Supabase is not configured; shop logo could not be removed.');
   const objectPath = shopLogoObjectPath(logoUrl, supabaseUrl);
   if (!objectPath) return;

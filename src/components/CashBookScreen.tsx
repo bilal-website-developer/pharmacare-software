@@ -14,7 +14,7 @@ import { TableExportButtons } from './TableExportButtons';
 
 interface CashBookScreenProps {
   transactions: CashTransaction[];
-  onAddTransaction: (tx: CashTransaction) => void;
+  onAddTransaction: (tx: CashTransaction) => void | Promise<void>;
 }
 
 export const CashBookScreen: React.FC<CashBookScreenProps> = ({
@@ -29,6 +29,8 @@ export const CashBookScreen: React.FC<CashBookScreenProps> = ({
   // Shift closing drawer count
   const [actualDrawerCashPKR, setActualDrawerCashPKR] = useState<number>(0);
   const [shiftClosed, setShiftClosed] = useState(false);
+  const [expenseError, setExpenseError] = useState('');
+  const [savingExpense, setSavingExpense] = useState(false);
 
   const totalInflowsPaisa = useMemo(() => {
     return transactions
@@ -57,24 +59,32 @@ export const CashBookScreen: React.FC<CashBookScreenProps> = ({
     );
   }, [transactions, search]);
 
-  const handleCreateExpense = (e: React.FormEvent) => {
+  const handleCreateExpense = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!expenseDesc || expenseAmountPKR <= 0) return;
+    if (!expenseDesc.trim() || !Number.isFinite(expenseAmountPKR) || expenseAmountPKR <= 0) return;
 
     const newTx: CashTransaction = {
       id: `tx-${Date.now()}`,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       type: 'EXPENSE',
-      description: expenseDesc,
-      amountPaisa: expenseAmountPKR * 100,
+      description: expenseDesc.trim(),
+      amountPaisa: Math.round(expenseAmountPKR * 100),
       isOutflow: true,
       handledBy: 'Active Cashier',
     };
 
-    onAddTransaction(newTx);
-    setShowExpenseModal(false);
-    setExpenseDesc('');
-    setExpenseAmountPKR(0);
+    try {
+      setSavingExpense(true);
+      await onAddTransaction(newTx);
+      setShowExpenseModal(false);
+      setExpenseDesc('');
+      setExpenseAmountPKR(0);
+      setExpenseError('');
+    } catch (error) {
+      setExpenseError(error instanceof Error ? error.message : 'Could not save this expense.');
+    } finally {
+      setSavingExpense(false);
+    }
   };
 
   return (
@@ -103,7 +113,10 @@ export const CashBookScreen: React.FC<CashBookScreenProps> = ({
             ])}
           />
           <button
-            onClick={() => setShowExpenseModal(true)}
+            onClick={() => {
+              setExpenseError('');
+              setShowExpenseModal(true);
+            }}
             className="px-3 py-1.5 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-control flex items-center gap-1.5 transition shadow-2xs"
           >
             <Plus size={14} /> Record Cash Expense
@@ -344,19 +357,26 @@ export const CashBookScreen: React.FC<CashBookScreenProps> = ({
               </div>
             </div>
 
+            {expenseError && <p role="alert" className="rounded-control border border-danger/30 bg-danger/10 px-2.5 py-2 text-xs text-danger">{expenseError}</p>}
+
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
               <button
                 type="button"
-                onClick={() => setShowExpenseModal(false)}
+                disabled={savingExpense}
+                onClick={() => {
+                  setExpenseError('');
+                  setShowExpenseModal(false);
+                }}
                 className="px-3 py-1.5 text-xs font-semibold text-muted hover:text-text rounded-control"
               >
                 Cancel
               </button>
               <button
                 type="submit"
+                disabled={savingExpense}
                 className="px-3.5 py-1.5 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-control shadow-2xs"
               >
-                Deduct from Drawer
+                {savingExpense ? 'Saving…' : 'Deduct from Drawer'}
               </button>
             </div>
           </form>

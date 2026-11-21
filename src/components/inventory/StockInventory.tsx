@@ -5,6 +5,7 @@ import {
 import { supabase } from '../../utils/supabase';
 import { getSupabaseErrorMessage } from '../../utils/supabaseError';
 import { dispatchStockChanged } from '../../utils/stockAlertsEvents';
+import { isDesktopMode, localApiRequest } from '../../services/localApi';
 import {
   ConfirmDialog, DataTable, EmptyState, ExpiryChip, FilterChip, KpiCard, SegmentedTabs,
   Skeleton, StockBar, StatusChip,
@@ -204,6 +205,43 @@ async function readRpc<T>(
   return data;
 }
 
+async function readStockData<T>(
+  functionName: 'stock_batches_list' | 'stock_overview_stats' | 'stock_expiry_buckets' | 'stock_adjustments_log',
+  args: Record<string, unknown> = {},
+  isExpected: (value: unknown) => value is T,
+): Promise<T> {
+  if (isDesktopMode()) {
+    let path: string;
+    let unwrap: (value: unknown) => unknown = (value) => value;
+    if (functionName === 'stock_batches_list') {
+      const query = new URLSearchParams();
+      Object.entries(args).forEach(([key, value]) => {
+        if (value !== null && value !== undefined) query.set(key, String(value));
+      });
+      path = `/api/inventory/stock-batches?${query.toString()}`;
+    } else if (functionName === 'stock_adjustments_log') {
+      const query = new URLSearchParams();
+      Object.entries(args).forEach(([key, value]) => {
+        if (value !== null && value !== undefined) query.set(key, String(value));
+      });
+      path = `/api/inventory/stock-adjustments?${query.toString()}`;
+    } else {
+      path = '/api/inventory/stock-overview';
+      unwrap = (value) => {
+        if (!isRecord(value)) return null;
+        return functionName === 'stock_overview_stats' ? value.stats : { buckets: value.buckets };
+      };
+    }
+    const response = await localApiRequest<unknown>(path);
+    const data = unwrap(response);
+    if (!isExpected(data)) throw new Error(`Unexpected response from local ${functionName}.`);
+    return data;
+  }
+  const client = supabase;
+  if (!client) throw new Error('Supabase is not configured.');
+  return readRpc(client.rpc(functionName, args), isExpected, functionName);
+}
+
 function money(paisa: number) {
   return `Rs ${(paisa / 100).toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -326,7 +364,7 @@ export function StockInventory({
   const load = useCallback(async () => {
     const client = supabase;
     const sequence = ++loadSequence.current;
-    if (!client) {
+    if (!client && !isDesktopMode()) {
       setError('Supabase is not configured.');
       setLoading(false);
       return;
@@ -335,8 +373,9 @@ export function StockInventory({
     setError('');
     try {
       const activeBatchTab: BatchTab = tab === 'adjustment-log' ? 'all' : tab;
-      const batchResultPromise = readRpc(
-        client.rpc('stock_batches_list', stockListArgs({
+      const batchResultPromise = readStockData(
+        'stock_batches_list',
+        stockListArgs({
           tab: activeBatchTab,
           search: appliedSearch,
           sort,
@@ -344,22 +383,22 @@ export function StockInventory({
           pageSize: PAGE_SIZE,
           medicineId: initialMedicineId,
           expiryBucket,
-        })),
+        }),
         isStockListResponse,
-        'stock_batches_list',
       );
-      const statsPromise = readRpc(
-        client.rpc('stock_overview_stats'),
-        isStockOverviewStats,
+      const statsPromise = readStockData(
         'stock_overview_stats',
+        {},
+        isStockOverviewStats,
       );
-      const bucketsPromise = readRpc(
-        client.rpc('stock_expiry_buckets'),
-        isStockExpiryBucketsResponse,
+      const bucketsPromise = readStockData(
         'stock_expiry_buckets',
+        {},
+        isStockExpiryBucketsResponse,
       );
-      const countPromises = BATCH_TABS.map(({ value }) => readRpc(
-        client.rpc('stock_batches_list', stockListArgs({
+      const countPromises = BATCH_TABS.map(({ value }) => readStockData(
+        'stock_batches_list',
+        stockListArgs({
           tab: value,
           search: appliedSearch,
           sort,
@@ -367,33 +406,32 @@ export function StockInventory({
           pageSize: 1,
           medicineId: initialMedicineId,
           expiryBucket: null,
-        })),
+        }),
         isStockListResponse,
-        'stock_batches_list',
       ));
       const activeMovementsPromise = tab === 'adjustment-log'
-        ? readRpc(
-          client.rpc('stock_adjustments_log', {
+        ? readStockData(
+          'stock_adjustments_log',
+          {
             p_page: page,
             p_page_size: PAGE_SIZE,
             p_reason: appliedSearch || null,
             p_batch_id: null,
-          }),
+          },
           isStockMovementsResponse,
-          'stock_adjustments_log',
         )
         : null;
       const movementCountPromise = tab === 'adjustment-log'
         ? null
-        : readRpc(
-          client.rpc('stock_adjustments_log', {
+        : readStockData(
+          'stock_adjustments_log',
+          {
             p_page: 1,
             p_page_size: 1,
             p_reason: appliedSearch || null,
             p_batch_id: null,
-          }),
+          },
           isStockMovementsResponse,
-          'stock_adjustments_log',
         );
       const [batchResult, nextStats, nextBuckets, ...countResults] = await Promise.all([
         batchResultPromise,
@@ -448,7 +486,7 @@ export function StockInventory({
     const client = supabase;
     const sequence = ++pickerSequence.current;
     if (!pickerOpen) return;
-    if (!client) {
+    if (!client && !isDesktopMode()) {
       setPickerError('Supabase is not configured.');
       setPickerLoading(false);
       return;
@@ -456,8 +494,9 @@ export function StockInventory({
     setPickerLoading(true);
     setPickerError('');
     try {
-      const response = await readRpc(
-        client.rpc('stock_batches_list', stockListArgs({
+      const response = await readStockData(
+        'stock_batches_list',
+        stockListArgs({
           tab: 'all',
           search: appliedPickerSearch,
           sort: 'expiry_asc',
@@ -465,9 +504,8 @@ export function StockInventory({
           pageSize: PICKER_PAGE_SIZE,
           medicineId: initialMedicineId,
           expiryBucket: null,
-        })),
+        }),
         isStockListResponse,
-        'stock_batches_list',
       );
       if (sequence !== pickerSequence.current) return;
       setPickerRows(response.rows);
@@ -490,22 +528,22 @@ export function StockInventory({
     if (!movementBatch) return;
     const client = supabase;
     const sequence = ++movementSequence.current;
-    if (!client) {
+    if (!client && !isDesktopMode()) {
       setMovementError('Supabase is not configured.');
       setMovementLoading(false);
       return;
     }
     setMovementLoading(true);
     setMovementError('');
-    void readRpc(
-      client.rpc('stock_adjustments_log', {
+    void readStockData(
+      'stock_adjustments_log',
+      {
         p_page: movementPage,
         p_page_size: PAGE_SIZE,
         p_reason: null,
         p_batch_id: movementBatch.id,
-      }),
+      },
       isStockMovementsResponse,
-      'stock_adjustments_log',
     ).then((response) => {
       if (sequence !== movementSequence.current) return;
       setMovements(response.rows);
@@ -549,21 +587,37 @@ export function StockInventory({
 
   const commitAdjustment = async () => {
     const client = supabase;
-    if (!client || !adjusting || !adjustmentPreview || !reason || saving) return;
+    if ((!client && !isDesktopMode()) || !adjusting || !adjustmentPreview || !reason || saving) return;
     setSaving(true);
     setError('');
     setNotice('');
     try {
-      const { data, error: rpcError } = await client.rpc('adjust_stock', {
-        p_batch_id: adjusting.id,
-        p_quantity_delta: adjustmentPreview.delta,
-        p_reason: reason,
-      });
-      if (rpcError) throw rpcError;
-      dispatchStockChanged();
-      if (typeof data !== 'number' || data !== adjustmentPreview.resultingQuantity) {
-        throw new Error('The stock adjustment response did not match the reviewed quantity.');
+      if (isDesktopMode()) {
+        const response = await localApiRequest<{ adjustedQuantitySmallestUnit?: number }>(
+          '/api/inventory/adjust',
+          'POST',
+          {
+            batchId: adjusting.id,
+            adjustedQuantitySmallestUnit: adjustmentPreview.resultingQuantity,
+            reason,
+          },
+        );
+        if (response.adjustedQuantitySmallestUnit !== adjustmentPreview.resultingQuantity) {
+          throw new Error('The local stock adjustment response did not match the reviewed quantity.');
+        }
+      } else {
+        if (!client) throw new Error('Supabase is not configured.');
+        const { data, error: rpcError } = await client.rpc('adjust_stock', {
+          p_batch_id: adjusting.id,
+          p_quantity_delta: adjustmentPreview.delta,
+          p_reason: reason,
+        });
+        if (rpcError) throw rpcError;
+        if (typeof data !== 'number' || data !== adjustmentPreview.resultingQuantity) {
+          throw new Error('The stock adjustment response did not match the reviewed quantity.');
+        }
       }
+      dispatchStockChanged();
       setAdjusting(null);
       setConfirmAdjustment(false);
       setNotice('Stock adjustment recorded.');
@@ -578,16 +632,24 @@ export function StockInventory({
 
   const commitWriteOff = async () => {
     const client = supabase;
-    if (!client || !writeOffBatch || saving) return;
+    if ((!client && !isDesktopMode()) || !writeOffBatch || saving) return;
     setSaving(true);
     setError('');
     setNotice('');
     try {
-      const { error: rpcError } = await client.rpc('write_off_expired_batch', {
-        p_batch_id: writeOffBatch.id,
-        p_reason: 'expired',
-      });
-      if (rpcError) throw rpcError;
+      if (isDesktopMode()) {
+        await localApiRequest('/api/inventory/write-off', 'POST', {
+          batchId: writeOffBatch.id,
+          reason: 'expired',
+        });
+      } else {
+        if (!client) throw new Error('Supabase is not configured.');
+        const { error: rpcError } = await client.rpc('write_off_expired_batch', {
+          p_batch_id: writeOffBatch.id,
+          p_reason: 'expired',
+        });
+        if (rpcError) throw rpcError;
+      }
       dispatchStockChanged();
       setNotice(`Batch ${writeOffBatch.batch_number} written off. The batch remains in inventory history.`);
       setWriteOffBatch(null);
@@ -702,7 +764,7 @@ export function StockInventory({
 
   const exportRows = async (format: 'csv' | 'xlsx') => {
     const client = supabase;
-    if (!client || exporting) return;
+    if ((!client && !isDesktopMode()) || exporting) return;
     setExporting(true);
     setError('');
     try {
@@ -711,15 +773,15 @@ export function StockInventory({
         let total = 0;
         let exportPage = 1;
         do {
-          const response = await readRpc(
-            client.rpc('stock_adjustments_log', {
+          const response = await readStockData(
+            'stock_adjustments_log',
+            {
               p_page: exportPage,
               p_page_size: EXPORT_PAGE_SIZE,
               p_reason: appliedSearch || null,
               p_batch_id: null,
-            }),
+            },
             isStockMovementsResponse,
-            'stock_adjustments_log',
           );
           allMovements.push(...response.rows);
           total = response.total_count;
@@ -742,8 +804,9 @@ export function StockInventory({
         let total = 0;
         let exportPage = 1;
         do {
-          const response = await readRpc(
-            client.rpc('stock_batches_list', stockListArgs({
+          const response = await readStockData(
+            'stock_batches_list',
+            stockListArgs({
               tab,
               search: appliedSearch,
               sort,
@@ -751,9 +814,8 @@ export function StockInventory({
               pageSize: EXPORT_PAGE_SIZE,
               medicineId: initialMedicineId,
               expiryBucket,
-            })),
+            }),
             isStockListResponse,
-            'stock_batches_list',
           );
           allBatches.push(...response.rows);
           total = response.total_count;

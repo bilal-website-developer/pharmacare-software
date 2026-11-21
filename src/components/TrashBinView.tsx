@@ -4,6 +4,7 @@ import { UserRole } from '../types/pharmacy';
 import { invokeManageUsers } from './ManageUsersView';
 import { supabase } from '../utils/supabase';
 import { filterTrashBinEvents, parseTrashBinEvent, searchTrashBinEvents, TrashBinEvent, TrashFilter } from '../utils/trashBin';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 
 const FILTERS: Array<{ value: TrashFilter; label: string }> = [
   { value: 'all', label: 'All activity' },
@@ -40,14 +41,20 @@ export function TrashBinView({ currentRole }: { currentRole: UserRole }) {
     setLoading(true);
     setSelectedEventId('');
     setNotice(null);
-    if (!supabase) {
+    if (!isDesktopMode() && !supabase) {
       setNotice({ text: 'Supabase is not configured.', error: true });
       setLoading(false);
       return false;
     }
     try {
-      const { data, error } = await supabase.rpc('trash_bin_events_list');
-      if (error) throw new Error(error.message);
+      const data = isDesktopMode()
+        ? await localApiRequest<unknown>('/api/trash')
+        : await (async () => {
+          if (!supabase) throw new Error('Supabase is not configured.');
+          const { data: response, error } = await supabase.rpc('trash_bin_events_list');
+          if (error) throw new Error(error.message);
+          return response;
+        })();
       if (!Array.isArray(data)) throw new Error('Trash Bin returned an invalid activity list.');
       setEvents(data.map(parseTrashBinEvent));
       setNotice(null);
@@ -75,30 +82,36 @@ export function TrashBinView({ currentRole }: { currentRole: UserRole }) {
   const selectableEventCount = visibleEvents.filter((event) => event.can_permanently_delete).length;
 
   const restore = async (event: TrashBinEvent) => {
-    if (!event.can_restore || !supabase) return;
+    if (!event.can_restore || (!isDesktopMode() && !supabase)) return;
     setBusyId(event.id);
     setNotice(null);
     try {
-      if (event.entity_type === 'profile') {
-        const result = await invokeManageUsers<{ message: string }>({
-          action: 'restore',
-          id: event.entity_id,
-        });
-        setNotice({ text: result.message || `${event.display_name} restored.`, error: false });
-      } else if (event.entity_type === 'medicine') {
-        const { error } = await supabase.rpc('restore_trash_medicine', {
-          p_medicine_id: event.entity_id,
-        });
-        if (error) throw new Error(error.message);
-        setNotice({ text: `${event.display_name} restored.`, error: false });
-      } else if (event.entity_type === 'supplier') {
-        const { error } = await supabase.rpc('restore_trash_supplier', {
-          p_supplier_id: event.entity_id,
-        });
-        if (error) throw new Error(error.message);
+      if (isDesktopMode()) {
+        await localApiRequest(`/api/trash/${encodeURIComponent(event.id)}/restore`, 'PUT');
         setNotice({ text: `${event.display_name} restored.`, error: false });
       } else {
-        return;
+        if (!supabase) throw new Error('Supabase is not configured.');
+        if (event.entity_type === 'profile') {
+          const result = await invokeManageUsers<{ message: string }>({
+            action: 'restore',
+            id: event.entity_id,
+          });
+          setNotice({ text: result.message || `${event.display_name} restored.`, error: false });
+        } else if (event.entity_type === 'medicine') {
+          const { error } = await supabase.rpc('restore_trash_medicine', {
+            p_medicine_id: event.entity_id,
+          });
+          if (error) throw new Error(error.message);
+          setNotice({ text: `${event.display_name} restored.`, error: false });
+        } else if (event.entity_type === 'supplier') {
+          const { error } = await supabase.rpc('restore_trash_supplier', {
+            p_supplier_id: event.entity_id,
+          });
+          if (error) throw new Error(error.message);
+          setNotice({ text: `${event.display_name} restored.`, error: false });
+        } else {
+          return;
+        }
       }
       await refresh();
     } catch (caught) {
@@ -112,7 +125,7 @@ export function TrashBinView({ currentRole }: { currentRole: UserRole }) {
   };
 
   const permanentlyDeleteSelected = async () => {
-    if (!selectedEvent?.can_permanently_delete || !supabase || busyId) return;
+    if (!selectedEvent?.can_permanently_delete || (!isDesktopMode() && !supabase) || busyId) return;
     const event = selectedEvent;
     if (!window.confirm(
       `Permanently delete "${event.display_name}"? This cannot be undone. Items with transaction history cannot be deleted.`,
@@ -121,7 +134,14 @@ export function TrashBinView({ currentRole }: { currentRole: UserRole }) {
     setBusyId(event.id);
     setNotice(null);
     try {
-      if (event.entity_type === 'profile') {
+      if (isDesktopMode()) {
+        await localApiRequest(`/api/trash/${encodeURIComponent(event.id)}`, 'DELETE');
+        if (await refresh()) {
+          setNotice({ text: `${event.display_name} permanently deleted.`, error: false });
+        }
+      } else if (!supabase) {
+        throw new Error('Supabase is not configured.');
+      } else if (event.entity_type === 'profile') {
         const result = await invokeManageUsers<{ message: string }>({
           action: 'permanently_delete',
           event_id: event.id,
@@ -255,7 +275,9 @@ export function TrashBinView({ currentRole }: { currentRole: UserRole }) {
                 <tr><td colSpan={6} className="px-3 py-8 text-center text-muted">No matching Trash Bin activity.</td></tr>
               ) : visibleEvents.map((event) => {
                 const canRestore = event.can_restore
-                  && (event.entity_type !== 'profile' || currentRole === UserRole.SUPER_ADMIN);
+                  && (event.entity_type !== 'profile'
+                    || currentRole === UserRole.SUPER_ADMIN
+                    || (isDesktopMode() && currentRole === UserRole.ADMIN));
                 return (
                   <tr
                     key={event.id}

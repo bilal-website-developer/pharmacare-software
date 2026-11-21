@@ -57,3 +57,11 @@ The local Windows packaging environment successfully rebuilt the SQLite native m
 ## 2026-11-21 desktop continuation
 
 Added loopback development central licensing (`central:dev`, `desktop:local`), local-only Ed25519 key generation and one-time test activation, recovery-key-gated portable backup/restore, and CSV/XLSX export controls for several filtered screens. Focused central, portable backup, CSV, local-backend, and renderer checks pass. The local workflows do not establish full renderer/backend parity or validate production Supabase deployment; remaining acceptance gaps are tracked in `docs/PROJECT_CONTEXT.md` and `docs/WINDOWS_DESKTOP_AUDIT.md`.
+
+## 2026-11-21 desktop parity and icon continuation
+
+Use the supplied `public/pharma-care-512.png` as the sole desktop identity asset. Generate a transparent 16/24/32/48/64/128/256px multi-frame ICO and retain an exact 512px PNG copy under `desktop-app/build/`. Apply the ICO to the BrowserWindow, Windows executable, NSIS installer/uninstaller/header, and shortcuts; use the builder `appId` as the Windows AppUserModelID. Package the assets in resources so development and packaged paths are both explicit and checked.
+
+Local routes and UI adapters were extended for master data, products/import preview, stock views, purchase history, sidebar preferences, stock alerts, and cashbook persistence. A focused backend test expectation was corrected to refer to the product's edited code (`MED-002`), rather than the stale pre-edit code; product behavior did not change.
+
+Do not treat this as full parity. `docs/PARITY_GAPS.md` is the current per-screen source inventory. In particular, the sale-return request/review workflow is still Supabase-only, browser-local state remains for some preferences/drafts, receipt QR links are disabled offline, and UI mutation/role acceptance is outstanding. Do not make a release-readiness claim based solely on a successful installer build or API tests.

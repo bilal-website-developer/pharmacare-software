@@ -10,6 +10,11 @@ files:
 asarUnpack:
   - "**/*.node"
 npmRebuild: true
+extraResources:
+  - from: build/pharma-care.ico
+    to: build/pharma-care.ico
+  - from: build/icon.png
+    to: build/icon.png
 win:
   target:
     - nsis
@@ -19,3 +24,6 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: false
+  installerIcon: build/pharma-care.ico
+  uninstallerIcon: build/pharma-care.ico
+  installerHeaderIcon: build/pharma-care.ico

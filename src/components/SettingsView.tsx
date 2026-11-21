@@ -293,7 +293,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   }, [logoFile]);
 
   useEffect(() => {
-    if (!isShopAdmin || !canManageDemoData) return undefined;
+    if (desktopMode || !isShopAdmin || !canManageDemoData) return undefined;
     let active = true;
     void checkDemoDataStatus()
       .then((status) => {
@@ -310,10 +310,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     return () => {
       active = false;
     };
-  }, [canManageDemoData, isShopAdmin]);
+  }, [canManageDemoData, desktopMode, isShopAdmin]);
 
   const handleLoadDemoData = async () => {
-    if (!canManageDemoData || !canLoadDemoData) return;
+    if (desktopMode || !canManageDemoData || !canLoadDemoData) return;
     setDemoBusy(true);
     setDemoNotice(null);
     try {
@@ -376,6 +376,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const handleRemoveDemoData = async () => {
+    if (desktopMode) return;
     setDemoBusy(true);
     setDemoNotice(null);
     try {
@@ -1384,7 +1385,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       </div>
 
       {/* ── Demo Data & Client Showcase (Load / Remove) ────────────────────── */}
-      {isShopAdmin && <div className="space-y-4 rounded-card border border-border bg-white p-6 shadow-xs">
+      {!desktopMode && isShopAdmin && <div className="space-y-4 rounded-card border border-border bg-white p-6 shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="flex items-center gap-2 text-sm font-black text-text">

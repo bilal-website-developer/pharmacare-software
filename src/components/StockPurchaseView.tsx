@@ -6,6 +6,7 @@ import { usePermissions } from '../permissions';
 import { getSupabaseErrorMessage } from '../utils/supabaseError';
 import { supabase } from '../utils/supabase';
 import { dispatchStockChanged } from '../utils/stockAlertsEvents';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 
 interface PurchaseUnit {
   id: string;
@@ -132,13 +133,66 @@ export function StockPurchaseView({
   const [notice, setNotice] = useState<{ text: string; error: boolean; viewHistory?: boolean } | null>(null);
 
   const refreshProducts = useCallback(async (): Promise<string | null> => {
-    if (!supabase) {
+    if (!isDesktopMode() && !supabase) {
       setNotice({ text: 'Supabase is not configured.', error: true });
       setLoading(false);
       return 'Supabase is not configured.';
     }
     setLoading(true);
     try {
+      if (isDesktopMode()) {
+        const [catalog, supplierRows] = await Promise.all([
+          localApiRequest<unknown>('/api/purchases/catalog'),
+          localApiRequest<unknown>('/api/suppliers'),
+        ]);
+        if (!Array.isArray(catalog) || !Array.isArray(supplierRows)) {
+          throw new Error('The local purchase catalog returned invalid data.');
+        }
+        setProducts(catalog.flatMap((row) => {
+          if (typeof row !== 'object' || row === null) return [];
+          const item = row as Record<string, unknown>;
+          if (typeof item.id !== 'string' || typeof item.code !== 'string'
+            || typeof item.brandName !== 'string' || typeof item.genericName !== 'string'
+            || !Array.isArray(item.units)) return [];
+          const units = item.units.flatMap((unit) => {
+            if (typeof unit !== 'object' || unit === null) return [];
+            const value = unit as Record<string, unknown>;
+            return typeof value.id === 'string'
+              && typeof value.name === 'string'
+              && typeof value.conversionFactor === 'number'
+              && typeof value.pricePerUnitPaisa === 'number'
+              && typeof value.isDefaultSaleUnit === 'boolean'
+              ? [{
+                id: value.id,
+                name: value.name,
+                conversion_factor: value.conversionFactor,
+                is_default_sale_unit: value.isDefaultSaleUnit,
+                price_paisa: value.pricePerUnitPaisa,
+              }]
+              : [];
+          });
+          return [{
+            id: item.id,
+            code: item.code,
+            barcode: typeof item.barcode === 'string' ? item.barcode : null,
+            brand_name: item.brandName,
+            generic_name: item.genericName,
+            company: typeof item.company === 'string' ? item.company : '',
+            stock: typeof item.stock === 'number' ? item.stock : 0,
+            last_cost_base_paisa: typeof item.lastCostBasePaisa === 'number' ? item.lastCostBasePaisa : null,
+            units,
+          }];
+        }));
+        setSuppliers(supplierRows.flatMap((row) => {
+          if (typeof row !== 'object' || row === null) return [];
+          const item = row as Record<string, unknown>;
+          return typeof item.id === 'string' && typeof item.name === 'string' && item.isActive === true
+            ? [{ id: item.id, name: item.name }]
+            : [];
+        }));
+        return null;
+      }
+      if (!supabase) throw new Error('Supabase is not configured.');
       const [{ data: catalog, error: catalogError }, { data: supplierRows, error: supplierError }] = await Promise.all([
         supabase.rpc('purchase_catalog'),
         supabase.from('suppliers').select('id,name').eq('is_active', true).order('name'),
@@ -284,33 +338,66 @@ export function StockPurchaseView({
     }
     if (!Number.isSafeInteger(subtotal) || subtotal > 2147483647) return setNotice({ text: 'Purchase subtotal exceeds the supported limit.', error: true });
     if (discountPaisa > 2147483647) return setNotice({ text: 'Discount exceeds the supported limit.', error: true });
-    if (!supabase) return setNotice({ text: 'Supabase is not configured.', error: true });
-
     setSaving(true);
     setNotice(null);
     try {
-      const { data, error } = await supabase.rpc('post_purchase', {
-        p_supplier_id: supplierId,
-        p_invoice_number: invoiceNumber.trim() || null,
-        p_purchase_date: purchaseDate,
-        p_paid_paisa: paymentType === 'cash' ? total : 0,
-        p_notes: notes.trim() || null,
-        p_discount_paisa: discountPaisa,
-        p_payment_type: paymentType,
-        p_items: cart.map((line) => ({
-          medicine_id: line.product.id,
-          unit_id: line.unitId,
-          batch_number: line.batchNumber.trim(),
-          expiry_date: line.expiryDate,
-          quantity: line.quantity,
-          bonus_qty: line.bonusQty,
-          unit_cost_paisa: parsePaisa(line.rate),
-          mrp_paisa: parsePaisa(line.mrp),
-        })),
-      });
-      if (error) throw error;
+      let data: unknown;
+      if (isDesktopMode()) {
+        const purchaseItems = cart.map((line) => {
+          const unit = unitFor(line);
+          return {
+            medicineId: line.product.id,
+            unitName: unit?.name ?? '',
+            quantity: line.quantity,
+            bonusQty: line.bonusQty,
+            packSize: unit?.conversion_factor ?? 1,
+            costPerPackPaisa: parsePaisa(line.rate),
+            mrpPaisa: parsePaisa(line.mrp),
+            batchNumber: line.batchNumber.trim(),
+            expiryDate: line.expiryDate,
+          };
+        });
+        data = await localApiRequest('/api/purchases', 'POST', {
+          supplierId,
+          invoiceNumber: invoiceNumber.trim(),
+          purchaseDate,
+          paidAmountPaisa: paymentType === 'cash' ? total : 0,
+          paymentMethod: paymentType === 'cash' ? 'CASH' : 'CREDIT',
+          discountPaisa,
+          notes: notes.trim(),
+          items: purchaseItems,
+        });
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const result = await supabase.rpc('post_purchase', {
+          p_supplier_id: supplierId,
+          p_invoice_number: invoiceNumber.trim() || null,
+          p_purchase_date: purchaseDate,
+          p_paid_paisa: paymentType === 'cash' ? total : 0,
+          p_notes: notes.trim() || null,
+          p_discount_paisa: discountPaisa,
+          p_payment_type: paymentType,
+          p_items: cart.map((line) => ({
+            medicine_id: line.product.id,
+            unit_id: line.unitId,
+            batch_number: line.batchNumber.trim(),
+            expiry_date: line.expiryDate,
+            quantity: line.quantity,
+            bonus_qty: line.bonusQty,
+            unit_cost_paisa: parsePaisa(line.rate),
+            mrp_paisa: parsePaisa(line.mrp),
+          })),
+        });
+        if (result.error) throw result.error;
+        data = result.data;
+      }
       dispatchStockChanged();
-      const posted = data as PostedPurchase;
+      const response = data as Record<string, unknown>;
+      const posted: PostedPurchase = {
+        id: String(response.id ?? response.purchaseId ?? ''),
+        pr_no: String(response.pr_no ?? response.purchaseNumber ?? ''),
+        total_paisa: Number(response.total_paisa ?? response.totalAmountPaisa ?? 0),
+      };
       clearForm();
       const refreshError = await refreshProducts();
       setNotice(refreshError

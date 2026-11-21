@@ -7,6 +7,7 @@ import { usePermissions } from '../permissions';
 import { fetchAllSupabaseRows } from '../utils/fetchAllSupabaseRows';
 import { getSupabaseErrorMessage } from '../utils/supabaseError';
 import { supabase } from '../utils/supabase';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 import { findSimilarNames, type SimilarNamePair } from './masterDataSimilarity';
 
 type MasterTab = 'categories' | 'brands' | 'units';
@@ -136,7 +137,7 @@ export function MasterDataView({ onViewProducts }: {
 
   const loadOverview = useCallback(async () => {
     const client = supabase;
-    if (!client) {
+    if (!isDesktopMode() && !client) {
       setError('Supabase is not configured.');
       setLoading(false);
       return;
@@ -144,8 +145,14 @@ export function MasterDataView({ onViewProducts }: {
     setLoading(true);
     setError('');
     try {
-      const { data, error: rpcError } = await client.rpc('master_data_overview');
-      if (rpcError) throw rpcError;
+      const data = isDesktopMode()
+        ? await localApiRequest<unknown>('/api/master-data/overview')
+        : await (async () => {
+          if (!client) throw new Error('Supabase is not configured.');
+          const { data: response, error: rpcError } = await client.rpc('master_data_overview');
+          if (rpcError) throw rpcError;
+          return response;
+        })();
       if (!isOverview(data)) throw new Error('The master-data overview returned an invalid response.');
       setOverview(data);
     } catch (caught) {
@@ -158,13 +165,32 @@ export function MasterDataView({ onViewProducts }: {
 
   const loadUnits = useCallback(async () => {
     const client = supabase;
-    if (!client) {
+    if (!isDesktopMode() && !client) {
       setUnitsError('Supabase is not configured.');
       return;
     }
     setUnitsLoading(true);
     setUnitsError('');
     try {
+      if (isDesktopMode()) {
+        const unitRows = await localApiRequest<unknown>('/api/master-data/units');
+        if (!Array.isArray(unitRows) || !unitRows.every((unit) =>
+          isRecord(unit)
+          && typeof unit.id === 'string'
+          && typeof unit.medicine_id === 'string'
+          && typeof unit.name === 'string'
+          && typeof unit.conversion_factor === 'number'
+          && typeof unit.is_default_sale_unit === 'boolean'
+          && typeof unit.price_paisa === 'number'
+          && (typeof unit.barcode === 'string' || unit.barcode === null)
+          && typeof unit.medicine_name === 'string'
+        )) {
+          throw new Error('The local medicine-unit service returned an invalid response.');
+        }
+        setUnits(unitRows as UnitRow[]);
+        return;
+      }
+      if (!client) throw new Error('Supabase is not configured.');
       const [unitRows, medicineRows] = await Promise.all([
         fetchAllSupabaseRows((from, to) => client.from('medicine_units')
           .select('id,medicine_id,name,conversion_factor,is_default_sale_unit,price_paisa,barcode')
@@ -211,7 +237,7 @@ export function MasterDataView({ onViewProducts }: {
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
-    if (!supabase || !editing) return;
+    if (!editing) return;
     const cleanName = name.trim();
     if (!cleanName) {
       setNotice('Name is required.');
@@ -220,13 +246,23 @@ export function MasterDataView({ onViewProducts }: {
     setSaving(true);
     setNotice('');
     try {
-      const { error: rpcError } = await supabase.rpc(
-        editing.kind === 'category' ? 'save_category' : 'save_brand',
-        editing.kind === 'category'
-          ? { p_category_id: editing.item?.id ?? null, p_name: cleanName, p_is_active: active }
-          : { p_brand_id: editing.item?.id ?? null, p_name: cleanName, p_is_active: active },
-      );
-      if (rpcError) throw rpcError;
+      if (isDesktopMode()) {
+        await localApiRequest('/api/master-data/values', 'POST', {
+          kind: editing.kind,
+          id: editing.item?.id,
+          name: cleanName,
+          isActive: active,
+        });
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const { error: rpcError } = await supabase.rpc(
+          editing.kind === 'category' ? 'save_category' : 'save_brand',
+          editing.kind === 'category'
+            ? { p_category_id: editing.item?.id ?? null, p_name: cleanName, p_is_active: active }
+            : { p_brand_id: editing.item?.id ?? null, p_name: cleanName, p_is_active: active },
+        );
+        if (rpcError) throw rpcError;
+      }
       setEditing(null);
       setNotice(`${editing.kind === 'category' ? 'Category' : 'Manufacturer'} saved.`);
       await loadOverview();
@@ -238,17 +274,25 @@ export function MasterDataView({ onViewProducts }: {
   };
 
   const remove = async () => {
-    if (!supabase || !pendingDelete) return;
+    if (!pendingDelete) return;
     setSaving(true);
     setError('');
     setNotice('');
     try {
       const { kind, item } = pendingDelete;
-      const { error: rpcError } = await supabase.rpc(
-        kind === 'category' ? 'delete_category' : 'delete_brand',
-        kind === 'category' ? { p_category_id: item.id } : { p_brand_id: item.id },
-      );
-      if (rpcError) throw rpcError;
+      if (isDesktopMode()) {
+        await localApiRequest(
+          `/api/master-data/values/${kind}/${encodeURIComponent(item.id)}`,
+          'DELETE',
+        );
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const { error: rpcError } = await supabase.rpc(
+          kind === 'category' ? 'delete_category' : 'delete_brand',
+          kind === 'category' ? { p_category_id: item.id } : { p_brand_id: item.id },
+        );
+        if (rpcError) throw rpcError;
+      }
       setPendingDelete(null);
       setNotice(`${kind === 'category' ? 'Category' : 'Manufacturer'} deleted.`);
       await loadOverview();
@@ -283,7 +327,7 @@ export function MasterDataView({ onViewProducts }: {
   };
 
   const performMerge = async () => {
-    if (!supabase || !merge) return;
+    if (!merge) return;
     const target = (merge.kind === 'category' ? overview?.categories : overview?.manufacturers)
       ?.find((item) => item.id === merge.targetId);
     if (!target) {
@@ -294,16 +338,31 @@ export function MasterDataView({ onViewProducts }: {
     setError('');
     setNotice('');
     try {
-      const { data, error: rpcError } = await supabase.rpc(
-        merge.kind === 'category' ? 'merge_categories' : 'merge_brands',
-        merge.kind === 'category'
-          ? { p_source_category_id: merge.source.id, p_target_category_id: target.id }
-          : { p_source_brand_id: merge.source.id, p_target_brand_id: target.id },
-      );
-      if (rpcError) throw rpcError;
-      if (typeof data !== 'number') throw new Error('The merge service returned an invalid response.');
+      let updatedCount: number;
+      if (isDesktopMode()) {
+        const response = await localApiRequest<unknown>('/api/master-data/merge', 'POST', {
+          kind: merge.kind,
+          sourceId: merge.source.id,
+          targetId: target.id,
+        });
+        if (!isRecord(response) || typeof response.updatedCount !== 'number') {
+          throw new Error('The local master-data service returned an invalid merge response.');
+        }
+        updatedCount = response.updatedCount;
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const { data, error: rpcError } = await supabase.rpc(
+          merge.kind === 'category' ? 'merge_categories' : 'merge_brands',
+          merge.kind === 'category'
+            ? { p_source_category_id: merge.source.id, p_target_category_id: target.id }
+            : { p_source_brand_id: merge.source.id, p_target_brand_id: target.id },
+        );
+        if (rpcError) throw rpcError;
+        if (typeof data !== 'number') throw new Error('The merge service returned an invalid response.');
+        updatedCount = data;
+      }
       setMerge(null);
-      setNotice(`Merged “${merge.source.name}” into “${target.name}”; ${data} product${data === 1 ? '' : 's'} updated.`);
+      setNotice(`Merged “${merge.source.name}” into “${target.name}”; ${updatedCount} product${updatedCount === 1 ? '' : 's'} updated.`);
       await loadOverview();
     } catch (caught) {
       setError(errorText(caught));

@@ -1090,11 +1090,11 @@ function PharmacyWorkspace({
     }
   }, [activeItem]);
 
-  const [isDemoActive, setIsDemoActive] = useState(() => !supabase && isDemoDataLoadedLocally());
+  const [isDemoActive, setIsDemoActive] = useState(() => !isDesktopMode() && !supabase && isDemoDataLoadedLocally());
 
   useEffect(() => {
     const handleDemoChange = () => {
-      setIsDemoActive(!supabase && isDemoDataLoadedLocally());
+      setIsDemoActive(!isDesktopMode() && !supabase && isDemoDataLoadedLocally());
     };
     window.addEventListener(DEMO_DATA_CHANGED_EVENT, handleDemoChange);
     return () => window.removeEventListener(DEMO_DATA_CHANGED_EVENT, handleDemoChange);
@@ -1102,10 +1102,10 @@ function PharmacyWorkspace({
 
   // Main Datasets
   const products = isDemoActive ? getDemoProducts() : [];
-  const [customers, setCustomers] = useState<Customer[]>(() => (!supabase && isDemoDataLoadedLocally() ? getDemoCustomers() : []));
-  const [ledgerEntries, setLedgerEntries] = useState<Record<string, LedgerEntry[]>>(() => (!supabase && isDemoDataLoadedLocally() ? getDemoLedgerEntries() : {}));
-  const [transactions, setTransactions] = useState<CashTransaction[]>(() => (!supabase && isDemoDataLoadedLocally() ? getDemoTransactions() : []));
-  const [completedSales, setCompletedSales] = useState<CompletedSale[]>(() => (!supabase && isDemoDataLoadedLocally() ? getDemoSales() : []));
+  const [customers, setCustomers] = useState<Customer[]>(() => (!isDesktopMode() && !supabase && isDemoDataLoadedLocally() ? getDemoCustomers() : []));
+  const [ledgerEntries, setLedgerEntries] = useState<Record<string, LedgerEntry[]>>(() => (!isDesktopMode() && !supabase && isDemoDataLoadedLocally() ? getDemoLedgerEntries() : {}));
+  const [transactions, setTransactions] = useState<CashTransaction[]>(() => (!isDesktopMode() && !supabase && isDemoDataLoadedLocally() ? getDemoTransactions() : []));
+  const [completedSales, setCompletedSales] = useState<CompletedSale[]>(() => (!isDesktopMode() && !supabase && isDemoDataLoadedLocally() ? getDemoSales() : []));
   const [todayProfitPaisa, setTodayProfitPaisa] = useState<number | null>(null);
   const [dataLoadError, setDataLoadError] = useState('');
 
@@ -1133,7 +1133,7 @@ function PharmacyWorkspace({
         if (accounts.customers.length > 0) {
           setCustomers(accounts.customers);
           setLedgerEntries(accounts.ledgerEntries);
-        } else if (!supabase && isDemoDataLoadedLocally()) {
+        } else if (!isDesktopMode() && !supabase && isDemoDataLoadedLocally()) {
           setCustomers(getDemoCustomers());
           setLedgerEntries(getDemoLedgerEntries());
         } else {
@@ -1141,7 +1141,7 @@ function PharmacyWorkspace({
           setLedgerEntries({});
         }
       }).catch((err) => {
-        if (!supabase && isDemoDataLoadedLocally()) {
+        if (!isDesktopMode() && !supabase && isDemoDataLoadedLocally()) {
           setCustomers(getDemoCustomers());
           setLedgerEntries(getDemoLedgerEntries());
         } else {
@@ -1153,13 +1153,13 @@ function PharmacyWorkspace({
         if (!active) return;
         if (loadedCustomers.length > 0) {
           setCustomers(loadedCustomers);
-        } else if (!supabase && isDemoDataLoadedLocally()) {
+        } else if (!isDesktopMode() && !supabase && isDemoDataLoadedLocally()) {
           setCustomers(getDemoCustomers());
         } else {
           setCustomers([]);
         }
       }).catch((err) => {
-        if (!supabase && isDemoDataLoadedLocally()) {
+        if (!isDesktopMode() && !supabase && isDemoDataLoadedLocally()) {
           setCustomers(getDemoCustomers());
         } else {
           reportLoadError(err);
@@ -1175,13 +1175,13 @@ function PharmacyWorkspace({
         if (!active) return;
         if (sales.length > 0) {
           setCompletedSales(sales);
-        } else if (!supabase && isDemoDataLoadedLocally()) {
+        } else if (!isDesktopMode() && !supabase && isDemoDataLoadedLocally()) {
           setCompletedSales(getDemoSales());
         } else {
           setCompletedSales([]);
         }
       }).catch((err) => {
-        if (!supabase && isDemoDataLoadedLocally()) {
+        if (!isDesktopMode() && !supabase && isDemoDataLoadedLocally()) {
           setCompletedSales(getDemoSales());
         } else {
           reportLoadError(err);
@@ -1191,7 +1191,13 @@ function PharmacyWorkspace({
       setCompletedSales([]);
     }
 
-    if (!supabase && isDemoDataLoadedLocally()) {
+    if (isDesktopMode()) {
+      void localApiRequest<CashTransaction[]>('/api/cashbook/transactions')
+        .then((loadedTransactions) => {
+          if (active) setTransactions(loadedTransactions);
+        })
+        .catch(reportLoadError);
+    } else if (!isDesktopMode() && !supabase && isDemoDataLoadedLocally()) {
       setTransactions((prev) => (prev.length > 0 ? prev : getDemoTransactions()));
     } else {
       setTransactions([]);
@@ -1403,6 +1409,20 @@ function PharmacyWorkspace({
     return customer;
   };
 
+  const handleAddCashTransaction = React.useCallback(async (transaction: CashTransaction) => {
+    if (isDesktopMode()) {
+      const saved = await localApiRequest<CashTransaction>('/api/cashbook/transactions', 'POST', {
+        description: transaction.description,
+        amountPaisa: transaction.amountPaisa,
+        isOutflow: transaction.isOutflow,
+        type: transaction.type,
+      });
+      setTransactions((previous) => [saved, ...previous]);
+      return;
+    }
+    setTransactions((previous) => [transaction, ...previous]);
+  }, []);
+
   // Calculations for End of Day modal
   const cashSalesPKR =
     completedSales
@@ -1424,7 +1444,7 @@ function PharmacyWorkspace({
   const grossProfitPKR = todayProfitPaisa === null ? null : todayProfitPaisa / 100;
   const netCashInHandPKR = Math.max(0, cashSalesPKR - expensesPKR);
   const loadProfitSummary = React.useCallback((from: Date, toExclusive: Date) => {
-    if (!supabase) {
+    if (!isDesktopMode() && !supabase) {
       return Promise.reject(new Error('Secure profit reporting requires a connected shop database.'));
     }
     return loadSalesProfitSummary(from, toExclusive);
@@ -1660,7 +1680,7 @@ function PharmacyWorkspace({
           {activeItem === 'expenses' && (
             <CashBookScreen
               transactions={transactions}
-              onAddTransaction={(tx) => setTransactions((prev) => [tx, ...prev])}
+              onAddTransaction={handleAddCashTransaction}
             />
           )}
 
@@ -1674,7 +1694,7 @@ function PharmacyWorkspace({
               generatedBy={currentUserName}
               onLoadProfitSummary={loadProfitSummary}
               onLoadCustomSales={(from, toExclusive) => {
-                if (!supabase && isDemoDataLoadedLocally()) {
+                if (!isDesktopMode() && !supabase && isDemoDataLoadedLocally()) {
                   return Promise.resolve(filterSalesBetween(
                     completedSales,
                     from,

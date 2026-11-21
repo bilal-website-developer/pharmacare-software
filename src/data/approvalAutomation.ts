@@ -1,4 +1,5 @@
 import { supabase } from '../utils/supabase';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 
 export interface ApprovalAutomationSettings {
   autoApprovePrintRequests: boolean;
@@ -21,6 +22,10 @@ export function parseApprovalAutomationSettings(value: unknown): ApprovalAutomat
 }
 
 export async function loadApprovalAutomationSettings(): Promise<ApprovalAutomationSettings> {
+  if (isDesktopMode()) {
+    const data = await localApiRequest<{ approvalSettings?: unknown }>('/api/settings/shop');
+    return parseApprovalAutomationSettings(data.approvalSettings);
+  }
   if (!supabase) throw new Error('Supabase is not configured; approval automation is unavailable.');
   const { data, error } = await supabase.rpc('get_approval_automation_settings');
   if (error) throw new Error(`Could not load approval automation settings: ${error.message}`);
@@ -30,6 +35,12 @@ export async function loadApprovalAutomationSettings(): Promise<ApprovalAutomati
 export async function updateApprovalAutomationSettings(
   settings: ApprovalAutomationSettings,
 ): Promise<ApprovalAutomationSettings> {
+  if (isDesktopMode()) {
+    const data = await localApiRequest<{ approvalSettings?: unknown }>('/api/settings/shop', 'PUT', {
+      approvalSettings: settings,
+    });
+    return parseApprovalAutomationSettings(data.approvalSettings);
+  }
   if (!supabase) throw new Error('Supabase is not configured; approval automation is unavailable.');
   const { data, error } = await supabase.rpc('update_approval_automation_settings', {
     p_auto_approve_print_requests: settings.autoApprovePrintRequests,

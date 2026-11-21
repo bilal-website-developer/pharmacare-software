@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "tsx --test src/server.test.ts src/db/portableBackup.test.ts src/routes/recoverySetup.test.ts src/routes/printRequestRoutes.test.ts",
+    "test": "tsx --test src/server.test.ts src/db/portableBackup.test.ts src/routes/recoverySetup.test.ts src/routes/printRequestRoutes.test.ts src/routes/masterDataRoutes.test.ts src/routes/inventoryRoutes.test.ts src/routes/notificationRoutes.test.ts src/routes/stockRoutes.test.ts src/routes/preferenceRoutes.test.ts src/routes/cashbookRoutes.test.ts",
     "build": "tsc",
     "start": "tsx src/server.ts"
   },

@@ -80,6 +80,7 @@ export function initializeSchema(db: Database.Database): void {
       conversion_factor INTEGER NOT NULL DEFAULT 1,
       is_default_sale_unit INTEGER NOT NULL DEFAULT 0,
       price_per_unit_paisa INTEGER NOT NULL DEFAULT 0,
+      barcode TEXT,
       is_active INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
@@ -95,6 +96,8 @@ export function initializeSchema(db: Database.Database): void {
       phone TEXT,
       email TEXT,
       address TEXT,
+      licence_or_tax_number TEXT NOT NULL DEFAULT '',
+      payment_terms TEXT NOT NULL DEFAULT 'CASH',
       balance_paisa INTEGER NOT NULL DEFAULT 0,
       is_active INTEGER NOT NULL DEFAULT 1,
       deleted_at INTEGER,
@@ -163,7 +166,10 @@ export function initializeSchema(db: Database.Database): void {
       invoice_number TEXT NOT NULL,
       purchase_date TEXT NOT NULL,
       total_amount_paisa INTEGER NOT NULL DEFAULT 0,
+      subtotal_amount_paisa INTEGER NOT NULL DEFAULT 0,
+      discount_amount_paisa INTEGER NOT NULL DEFAULT 0,
       paid_amount_paisa INTEGER NOT NULL DEFAULT 0,
+      payment_method TEXT NOT NULL DEFAULT 'CASH',
       payment_status TEXT NOT NULL DEFAULT 'PAID' CHECK(payment_status IN ('PAID', 'PARTIAL', 'CREDIT')),
       notes TEXT,
       created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -181,9 +187,11 @@ export function initializeSchema(db: Database.Database): void {
       medicine_id TEXT NOT NULL REFERENCES medicines(id),
       unit_name TEXT NOT NULL,
       quantity INTEGER NOT NULL,
+      bonus_qty INTEGER NOT NULL DEFAULT 0,
       pack_size INTEGER NOT NULL DEFAULT 1,
       cost_per_pack_paisa INTEGER NOT NULL,
       total_cost_paisa INTEGER NOT NULL,
+      mrp_paisa INTEGER NOT NULL DEFAULT 0,
       batch_number TEXT NOT NULL,
       expiry_date TEXT NOT NULL,
       created_at INTEGER NOT NULL
@@ -393,6 +401,7 @@ export function initializeSchema(db: Database.Database): void {
       memo_settings TEXT NOT NULL DEFAULT '{}',
       operational_settings TEXT NOT NULL DEFAULT '{}',
       approval_settings TEXT NOT NULL DEFAULT '{}',
+      receipt_qr_settings TEXT NOT NULL DEFAULT '{}',
       updated_at INTEGER NOT NULL
     );
 
@@ -498,5 +507,63 @@ export function initializeSchema(db: Database.Database): void {
   db.prepare(`
     INSERT OR IGNORE INTO schema_migrations (version, applied_at)
     VALUES (4, ?)
+  `).run(Math.floor(Date.now() / 1000));
+
+  const unitColumns = new Set(
+    (db.pragma('table_info(medicine_units)') as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!unitColumns.has('barcode')) {
+    db.exec('ALTER TABLE medicine_units ADD COLUMN barcode TEXT');
+  }
+  const supplierColumns = new Set(
+    (db.pragma('table_info(suppliers)') as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!supplierColumns.has('licence_or_tax_number')) {
+    db.exec("ALTER TABLE suppliers ADD COLUMN licence_or_tax_number TEXT NOT NULL DEFAULT ''");
+  }
+  if (!supplierColumns.has('payment_terms')) {
+    db.exec("ALTER TABLE suppliers ADD COLUMN payment_terms TEXT NOT NULL DEFAULT 'CASH'");
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name COLLATE NOCASE)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_brands_name ON brands(name COLLATE NOCASE)');
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+    VALUES (5, ?)
+  `).run(Math.floor(Date.now() / 1000));
+
+  const purchaseColumns = new Set(
+    (db.pragma('table_info(purchases)') as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!purchaseColumns.has('subtotal_amount_paisa')) {
+    db.exec('ALTER TABLE purchases ADD COLUMN subtotal_amount_paisa INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!purchaseColumns.has('discount_amount_paisa')) {
+    db.exec('ALTER TABLE purchases ADD COLUMN discount_amount_paisa INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!purchaseColumns.has('payment_method')) {
+    db.exec("ALTER TABLE purchases ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'CASH'");
+  }
+  const purchaseItemColumns = new Set(
+    (db.pragma('table_info(purchase_items)') as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!purchaseItemColumns.has('bonus_qty')) {
+    db.exec('ALTER TABLE purchase_items ADD COLUMN bonus_qty INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!purchaseItemColumns.has('mrp_paisa')) {
+    db.exec('ALTER TABLE purchase_items ADD COLUMN mrp_paisa INTEGER NOT NULL DEFAULT 0');
+  }
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+    VALUES (7, ?)
+  `).run(Math.floor(Date.now() / 1000));
+  const shopSettingsColumns = new Set(
+    (db.pragma('table_info(shop_settings)') as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!shopSettingsColumns.has('receipt_qr_settings')) {
+    db.exec("ALTER TABLE shop_settings ADD COLUMN receipt_qr_settings TEXT NOT NULL DEFAULT '{}'");
+  }
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+    VALUES (8, ?)
   `).run(Math.floor(Date.now() / 1000));
 }

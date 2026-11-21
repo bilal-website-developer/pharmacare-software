@@ -200,6 +200,133 @@ export function registerAuthRoutes(app: FastifyInstance, db: Database.Database):
         permissions: body.permissions || [],
       });
 
+      app.put('/api/auth/users/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+        try {
+          const actor = request.user as { role: string; userId: string };
+          if (actor.role !== 'admin') return reply.status(403).send({ error: 'Only admins can edit staff users.' });
+          const { id } = request.params as { id: string };
+          const body = request.body as {
+            username?: unknown;
+            fullName?: unknown;
+            email?: unknown;
+            role?: unknown;
+            permissions?: unknown;
+          };
+          const target = getUserById(db, id);
+          if (!target) return reply.status(404).send({ error: 'User not found.' });
+          if (id === actor.userId && body.role !== undefined && body.role !== target.role) {
+            return reply.status(400).send({ error: 'You cannot change your own role.' });
+          }
+          if (typeof body.username !== 'string' || !body.username.trim()
+            || typeof body.fullName !== 'string' || !body.fullName.trim()
+            || typeof body.email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)
+            || typeof body.role !== 'string'
+            || !['admin', 'manager', 'seller', 'cashier', 'accountant'].includes(body.role)
+            || !Array.isArray(body.permissions)
+            || body.permissions.some((permission) => typeof permission !== 'string')) {
+            return reply.status(400).send({ error: 'Enter valid user details, role, and permissions.' });
+          }
+          const duplicate = db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE AND id != ? AND deleted_at IS NULL')
+            .get(body.username.trim(), id);
+          if (duplicate) return reply.status(409).send({ error: 'That username is already in use.' });
+          db.prepare(`
+            UPDATE users
+            SET username = ?, full_name = ?, email = ?, role = ?, permissions = ?, updated_at = ?
+            WHERE id = ?
+          `).run(
+            body.username.trim(),
+            body.fullName.trim(),
+            body.email.trim(),
+            body.role,
+            JSON.stringify([...new Set(body.permissions as string[])]),
+            Math.floor(Date.now() / 1000),
+            id,
+          );
+          return reply.send({ success: true, id });
+        } catch (error) {
+          return reply.status(400).send({ error: error instanceof Error ? error.message : 'Could not update user.' });
+        }
+      });
+
+      app.post('/api/auth/users/:id/password', async (request: FastifyRequest, reply: FastifyReply) => {
+        try {
+          const actor = request.user as { role: string; userId: string };
+          if (actor.role !== 'admin') return reply.status(403).send({ error: 'Only admins can reset staff passwords.' });
+          const { id } = request.params as { id: string };
+          const body = request.body as { password?: unknown };
+          if (typeof body.password !== 'string' || body.password.length < 8) {
+            return reply.status(400).send({ error: 'Password must be at least 8 characters.' });
+          }
+          if (!getUserById(db, id)) return reply.status(404).send({ error: 'User not found.' });
+          await updateLocalUserPassword(db, id, body.password);
+          return reply.send({ success: true, message: 'Password reset successfully.' });
+        } catch (error) {
+          return reply.status(400).send({ error: error instanceof Error ? error.message : 'Could not reset the password.' });
+        }
+      });
+
+      app.put('/api/auth/users/:id/status', async (request: FastifyRequest, reply: FastifyReply) => {
+        try {
+          const actor = request.user as { role: string; userId: string; username: string };
+          if (actor.role !== 'admin') return reply.status(403).send({ error: 'Only admins can change staff access.' });
+          const { id } = request.params as { id: string };
+          if (id === actor.userId) return reply.status(400).send({ error: 'You cannot change your own access.' });
+          const body = request.body as { status?: unknown };
+          if (body.status !== 'deactivate' && body.status !== 'reactivate' && body.status !== 'remove_access') {
+            return reply.status(400).send({ error: 'Choose a valid user access status.' });
+          }
+          const target = db.prepare('SELECT username, is_active FROM users WHERE id = ? AND deleted_at IS NULL')
+            .get(id) as { username: string; is_active: number } | undefined;
+          if (!target) return reply.status(404).send({ error: 'User not found.' });
+          const now = Math.floor(Date.now() / 1000);
+          const removed = body.status === 'remove_access';
+          db.prepare(`
+            UPDATE users SET is_active = ?, deleted_at = ?, updated_at = ? WHERE id = ?
+          `).run(body.status === 'deactivate' ? 0 : (removed ? 0 : 1), removed ? now : null, now, id);
+          if (body.status !== 'reactivate') {
+            db.prepare(`
+              INSERT INTO trash_bin_events (
+                id, entity_type, entity_id, entity_name, action, reason,
+                performed_by, performed_by_name, created_at
+              ) VALUES (?, 'user', ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              crypto.randomUUID(),
+              id,
+              target.username,
+              'deactivate',
+              removed ? 'User access removed.' : 'User deactivated.',
+              actor.userId,
+              actor.username,
+              now,
+            );
+          }
+          return reply.send({ success: true, message: removed ? 'User access removed.' : `User ${body.status}d.` });
+        } catch (error) {
+          return reply.status(400).send({ error: error instanceof Error ? error.message : 'Could not change user access.' });
+        }
+      });
+
+      app.put('/api/auth/users/:id/restore', async (request: FastifyRequest, reply: FastifyReply) => {
+        try {
+          const actor = request.user as { role: string; userId: string; username: string };
+          if (actor.role !== 'admin') return reply.status(403).send({ error: 'Only admins can restore staff users.' });
+          const { id } = request.params as { id: string };
+          const user = db.prepare('SELECT username FROM users WHERE id = ? AND deleted_at IS NOT NULL').get(id) as { username: string } | undefined;
+          if (!user) return reply.status(404).send({ error: 'Removed user not found.' });
+          const now = Math.floor(Date.now() / 1000);
+          db.prepare('UPDATE users SET is_active = 1, deleted_at = NULL, updated_at = ? WHERE id = ?').run(now, id);
+          db.prepare(`
+            INSERT INTO trash_bin_events (
+              id, entity_type, entity_id, entity_name, action, reason,
+              performed_by, performed_by_name, created_at
+            ) VALUES (?, 'user', ?, ?, 'restore', 'User access restored.', ?, ?, ?)
+          `).run(crypto.randomUUID(), id, user.username, actor.userId, actor.username, now);
+          return reply.send({ success: true, message: 'User restored.' });
+        } catch (error) {
+          return reply.status(400).send({ error: error instanceof Error ? error.message : 'Could not restore user.' });
+        }
+      });
+
       return reply.status(201).send(user);
     } catch (error: any) {
       return reply.status(400).send({ error: error.message });

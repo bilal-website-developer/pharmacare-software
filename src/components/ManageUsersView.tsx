@@ -12,6 +12,7 @@ import {
 } from '../permissions';
 import { supabase } from '../utils/supabase';
 import { TableExportButtons } from './TableExportButtons';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 
 interface ShopOption {
   id: string;
@@ -68,6 +69,85 @@ const EMPTY_FORM: UserForm = {
 };
 
 export async function invokeManageUsers<T>(body: Record<string, unknown>): Promise<T> {
+  if (isDesktopMode()) {
+    const action = body.action;
+    if (action === 'list') {
+      const localUsers = await localApiRequest<unknown>('/api/auth/users');
+      if (!Array.isArray(localUsers)) throw new Error('The local user service returned an invalid list.');
+      const users = localUsers.map((value) => {
+        if (typeof value !== 'object' || value === null) throw new Error('The local user service returned an invalid record.');
+        const user = value as Record<string, unknown>;
+        return {
+          id: user.id,
+          username: user.username,
+          full_name: user.fullName,
+          email: user.email,
+          role: user.role,
+          is_active: user.isActive,
+          permissions: user.permissions,
+          can_manage: true,
+          can_edit: true,
+        };
+      });
+      return {
+        api_version: 6,
+        users,
+        currentCount: users.length,
+        assignable_roles: [UserRole.MANAGER, UserRole.SELLER, UserRole.CASHIER, UserRole.ACCOUNTANT],
+        grantable_permissions: [
+          ...MODULES.map(({ key }) => key),
+          'pos_print_sale',
+          'pos_print_payment',
+          ...SETTINGS_SECTION_PERMISSIONS.map(({ key }) => key),
+        ],
+        shops: [],
+      } as T;
+    }
+    if (action === 'create') {
+      const result = await localApiRequest<{ id: string }>('/api/auth/users', 'POST', {
+        username: body.username,
+        password: body.password,
+        fullName: body.full_name,
+        email: body.email,
+        role: body.role,
+        permissions: body.permissions,
+      });
+      return { id: result.id, message: 'User created.' } as T;
+    }
+    if (action === 'update') {
+      await localApiRequest(`/api/auth/users/${encodeURIComponent(String(body.id))}`, 'PUT', {
+        username: body.username,
+        fullName: body.full_name,
+        email: body.email,
+        role: body.role,
+        permissions: body.permissions,
+      });
+      return { id: body.id, message: 'User updated.' } as T;
+    }
+    if (action === 'reset_password') {
+      await localApiRequest(`/api/auth/users/${encodeURIComponent(String(body.id))}/password`, 'POST', {
+        password: body.password,
+      });
+      return { message: 'Password reset successfully.' } as T;
+    }
+    if (action === 'set_status') {
+      const status = body.status === 'remove_access' ? 'remove_access' : body.status;
+      const result = await localApiRequest<{ message?: string }>(
+        `/api/auth/users/${encodeURIComponent(String(body.id))}/status`,
+        'PUT',
+        { status },
+      );
+      return { message: result.message ?? 'User status updated.' } as T;
+    }
+    if (action === 'restore') {
+      const result = await localApiRequest<{ message?: string }>(
+        `/api/auth/users/${encodeURIComponent(String(body.id))}/restore`,
+        'PUT',
+      );
+      return { message: result.message ?? 'User restored.' } as T;
+    }
+    throw new Error(`The local user service does not support ${String(action)}.`);
+  }
   if (!supabase) throw new Error('Supabase is not configured.');
   const { data, error } = await supabase.functions.invoke('manage-users', { body });
   if (error) {
@@ -108,6 +188,7 @@ export function ManageUsersView({
   currentRole: UserRole;
 }) {
   const isSuperAdmin = currentRole === UserRole.SUPER_ADMIN;
+  const canManageStaff = isSuperAdmin || (isDesktopMode() && currentRole === UserRole.ADMIN);
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [adminTeamMembers, setAdminTeamMembers] = useState<AdminTeamMember[]>([]);
   const [adminTeamCount, setAdminTeamCount] = useState(0);
@@ -358,7 +439,7 @@ export function ManageUsersView({
   };
 
   const handleDelete = async (user: ManagedUser) => {
-    if (!serviceReady || !isSuperAdmin || !user.can_manage || user.id === currentUserId) return;
+    if (!serviceReady || !canManageStaff || !user.can_manage || user.id === currentUserId) return;
     if (!window.confirm(`Remove access for ${user.username}? They will be blocked from signing in and moved to the Trash Bin.`)) return;
     setNotice(null);
     try {
@@ -375,7 +456,7 @@ export function ManageUsersView({
   };
 
   const handleStatusChange = async (user: ManagedUser, status: 'deactivate' | 'reactivate') => {
-    if (!serviceReady || !isSuperAdmin || !user.can_manage || user.id === currentUserId) return;
+    if (!serviceReady || !canManageStaff || !user.can_manage || user.id === currentUserId) return;
     const description = status === 'deactivate' ? 'Deactivate' : 'Reactivate';
     if (!window.confirm(`${description} ${user.username}?`)) return;
     setNotice(null);
@@ -730,7 +811,7 @@ export function ManageUsersView({
                     <td className="px-5 py-4">
                       <div className="flex justify-end gap-2">
                         {user.can_edit && <button type="button" onClick={() => startEdit(user)} title={`Edit ${user.username}`} aria-label={`Edit ${user.username}`} className="rounded-control border border-border p-2 text-muted hover:bg-surface"><Pencil size={15} /></button>}
-                        {isSuperAdmin && user.can_manage && user.id !== currentUserId && <>
+                        {canManageStaff && user.can_manage && user.id !== currentUserId && <>
                           <button type="button" onClick={() => void handleStatusChange(user, user.is_active === true ? 'deactivate' : 'reactivate')} className="rounded-control border border-border px-2 py-1 text-xs font-semibold text-text hover:bg-surface">{user.is_active === true ? 'Deactivate' : 'Reactivate'}</button>
                           <button type="button" onClick={() => void handleDelete(user)} title={`Remove access for ${user.username}`} aria-label={`Remove access for ${user.username}`} className="rounded-control border border-red-200 p-2 text-danger hover:bg-red-50"><Trash2 size={15} /></button>
                         </>}
