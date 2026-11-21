@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fastify, { type FastifyInstance } from 'fastify';
 import { hashActivationCode, signLicenseToken, type LicenseClaims } from './licensingCrypto.js';
+import { normalizeLicenseAccess, type LicenseFeatureKey, type LicensePageKey } from './entitlementModel.js';
 
 interface DevelopmentLicenseState {
   shopId: string;
@@ -14,6 +15,8 @@ interface DevelopmentLicenseState {
   activationCodeHash: string;
   activationUsed: boolean;
   hardwareId: string | null;
+  enabledPages?: LicensePageKey[];
+  enabledFeatures?: LicenseFeatureKey[];
 }
 
 export function buildDevelopmentLicensingServer(configDir: string): FastifyInstance {
@@ -32,14 +35,19 @@ export function buildDevelopmentLicensingServer(configDir: string): FastifyInsta
     fs.renameSync(temporaryPath, statePath);
   };
 
-  const makeToken = (hardwareId: string): string => signLicenseToken({
-    shopId: state.shopId,
-    shopName: state.shopName,
-    expiresAt: state.expiresAt,
-    hardwareId,
-    status: state.shopStatus === 'ACTIVE' ? state.licenseStatus : 'SUSPENDED',
-    graceDays: state.graceDays,
-  }, privateKey);
+  const makeToken = (hardwareId: string): string => {
+    const access = normalizeLicenseAccess(state.enabledPages, state.enabledFeatures);
+    if (!access) throw new Error('Development license contains invalid page or feature entitlements.');
+    return signLicenseToken({
+      shopId: state.shopId,
+      shopName: state.shopName,
+      expiresAt: state.expiresAt,
+      hardwareId,
+      status: state.shopStatus === 'ACTIVE' ? state.licenseStatus : 'SUSPENDED',
+      graceDays: state.graceDays,
+      ...access,
+    }, privateKey);
+  };
 
   app.get('/api/health', async () => ({ status: 'ok' }));
 

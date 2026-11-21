@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import crypto from 'node:crypto';
 import { createActivationCode, hashActivationCode, signLicenseToken } from './licensingCrypto.js';
+import { normalizeLicenseAccess } from './entitlementModel.js';
 
 const app = fastify({ logger: true });
 const serviceUrl = process.env.CENTRAL_SUPABASE_URL;
@@ -85,9 +86,13 @@ app.post('/api/licensing/shops', async (request, reply) => {
     licenseType?: string;
     licenseExpiresAt?: string | null;
     activationExpiresAt?: string;
+    enabledPages?: unknown;
+    enabledFeatures?: unknown;
   };
+  const access = normalizeLicenseAccess(body.enabledPages, body.enabledFeatures);
   if (!body.shopName) return reply.status(400).send({ error: 'shopName is required.' });
   if (body.shopName.trim().length > 160) return reply.status(400).send({ error: 'shopName is too long.' });
+  if (!access) return reply.status(400).send({ error: 'One or more page or feature entitlements are invalid.' });
   const licenseExpiresAt = body.licenseExpiresAt ? new Date(body.licenseExpiresAt) : null;
   const activationExpiresAt = body.activationExpiresAt ? new Date(body.activationExpiresAt) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   if (
@@ -119,6 +124,8 @@ app.post('/api/licensing/shops', async (request, reply) => {
       license_type: body.licenseType || 'STANDARD',
       expires_at: licenseExpiresAt?.toISOString() || null,
       status: 'ACTIVE',
+      enabled_pages: access.enabledPages,
+      enabled_features: access.enabledFeatures,
     }),
   });
   const activationRows = await supabaseRequest('shop_activations', {
@@ -161,13 +168,15 @@ app.post('/api/licensing/activate', async (request, reply) => {
   const activation = claimed[0];
   if (!activation) return reply.status(404).send({ error: 'Activation code is invalid, expired, used, or unavailable.' });
   const shops = await supabaseRequest(
-    `shops?id=eq.${encodeURIComponent(activation.shop_id)}&select=*,licenses(expires_at,license_type,status,grace_days)`,
+    `shops?id=eq.${encodeURIComponent(activation.shop_id)}&select=*,licenses(expires_at,license_type,status,grace_days,enabled_pages,enabled_features)`,
   ) as Array<Record<string, any>>;
   const shop = shops[0];
   const license = Array.isArray(shop?.licenses) ? shop.licenses[0] : null;
   if (!shop || shop.status !== 'ACTIVE' || (license?.expires_at && new Date(license.expires_at).getTime() < Date.now())) {
     return reply.status(403).send({ error: 'This pharmacy license is not active.' });
   }
+  const access = normalizeLicenseAccess(license?.enabled_pages, license?.enabled_features);
+  if (!access) return reply.status(503).send({ error: 'Stored license entitlements are invalid.' });
   const licenseToken = signLicenseToken({
     shopId: activation.shop_id,
     shopName: shop.shop_name,
@@ -175,13 +184,14 @@ app.post('/api/licensing/activate', async (request, reply) => {
     hardwareId: body.hardwareId,
     status: shop.status === 'ACTIVE' && license?.status === 'ACTIVE' ? 'ACTIVE' : 'SUSPENDED',
     graceDays: getLicenseGraceDays(license?.grace_days),
+    ...access,
   }, signingKey);
   return reply.send({ success: true, licenseToken, shop });
 });
 
 app.get('/api/licensing/shops', async () => {
   return supabaseRequest(
-    'shops?select=id,shop_code,shop_name,owner_email,owner_phone,status,created_at,licenses(expires_at,license_type,status)&order=created_at.desc',
+    'shops?select=id,shop_code,shop_name,owner_email,owner_phone,status,created_at,licenses(expires_at,license_type,status,enabled_pages,enabled_features)&order=created_at.desc',
   );
 });
 
@@ -199,7 +209,12 @@ app.delete('/api/licensing/activations/:id', async (request, reply) => {
 app.patch('/api/licensing/shops/:id', async (request, reply) => {
   const { id } = request.params as { id: string };
   if (!/^[0-9a-f-]{36}$/i.test(id)) return reply.status(400).send({ error: 'Invalid shop ID.' });
-  const body = request.body as { status?: string; licenseExpiresAt?: string | null };
+  const body = request.body as {
+    status?: string;
+    licenseExpiresAt?: string | null;
+    enabledPages?: unknown;
+    enabledFeatures?: unknown;
+  };
   const allowedStatuses = new Set(['ACTIVE', 'SUSPENDED', 'REVOKED']);
   if (body.status && !allowedStatuses.has(body.status)) {
     return reply.status(400).send({ error: 'Status must be ACTIVE, SUSPENDED, or REVOKED.' });
@@ -210,6 +225,25 @@ app.patch('/api/licensing/shops/:id', async (request, reply) => {
     await supabaseRequest(`licenses?shop_id=eq.${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify({ expires_at: expiresAt?.toISOString() || null }),
+    });
+  }
+  if (body.enabledPages !== undefined || body.enabledFeatures !== undefined) {
+    const currentRows = await supabaseRequest(
+      `licenses?shop_id=eq.${encodeURIComponent(id)}&select=enabled_pages,enabled_features`,
+    ) as Array<{ enabled_pages?: unknown; enabled_features?: unknown }>;
+    const current = currentRows[0];
+    if (!current) return reply.status(404).send({ error: 'Pharmacy license was not found.' });
+    const access = normalizeLicenseAccess(
+      body.enabledPages === undefined ? current.enabled_pages : body.enabledPages,
+      body.enabledFeatures === undefined ? current.enabled_features : body.enabledFeatures,
+    );
+    if (!access) return reply.status(400).send({ error: 'One or more page or feature entitlements are invalid.' });
+    await supabaseRequest(`licenses?shop_id=eq.${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        enabled_pages: access.enabledPages,
+        enabled_features: access.enabledFeatures,
+      }),
     });
   }
   if (body.status) {
@@ -250,7 +284,7 @@ app.post('/api/licensing/check-in', async (request, reply) => {
     return reply.status(403).send({ error: 'This device is not registered for the pharmacy license.' });
   }
   const shops = await supabaseRequest(
-    `shops?id=eq.${encodeURIComponent(body.shopId)}&select=id,shop_name,status,licenses(expires_at,grace_days,status)`,
+    `shops?id=eq.${encodeURIComponent(body.shopId)}&select=id,shop_name,status,licenses(expires_at,grace_days,status,enabled_pages,enabled_features)`,
   ) as Array<Record<string, any>>;
   const shop = shops[0];
   const license = Array.isArray(shop?.licenses) ? shop.licenses[0] : null;
@@ -258,6 +292,8 @@ app.post('/api/licensing/check-in', async (request, reply) => {
   const status = shop.status === 'ACTIVE' && license.status === 'ACTIVE' ? 'ACTIVE'
     : shop.status === 'REVOKED' || license.status === 'REVOKED' ? 'REVOKED'
       : 'SUSPENDED';
+  const access = normalizeLicenseAccess(license.enabled_pages, license.enabled_features);
+  if (!access) return reply.status(503).send({ error: 'Stored license entitlements are invalid.' });
   const licenseToken = signLicenseToken({
     shopId: shop.id,
     shopName: shop.shop_name,
@@ -265,6 +301,7 @@ app.post('/api/licensing/check-in', async (request, reply) => {
     hardwareId: body.hardwareId,
     status,
     graceDays: getLicenseGraceDays(license.grace_days),
+    ...access,
   }, signingKey);
   await supabaseRequest('shop_checkins', {
     method: 'POST',

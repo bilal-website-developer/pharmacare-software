@@ -86,7 +86,9 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
       return reply.status(401).send({ error: 'This account is unavailable.' });
     }
 
-    const requiredPermissions = routePath.startsWith('/api/pos/')
+    const requiredPermissions = routePath === '/api/reports/returns'
+      ? ['pos']
+      : routePath.startsWith('/api/pos/')
       ? ['pos']
       : routePath.startsWith('/api/inventory/products')
         ? (request.method === 'GET' ? ['products', 'stock_inventory'] : ['products'])
@@ -118,6 +120,13 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
                                 ? ['stock_inventory', 'products']
                             : [];
 
+    const licenseAccess = checkLicenseStatus(db);
+    if (requiredPermissions.length > 0 && !requiredPermissions.some(
+      (permission) => licenseAccess.enabledPages.some((enabledPage) => enabledPage === permission),
+    )) {
+      return reply.status(403).send({ error: 'This page is not included in the pharmacy license plan.' });
+    }
+
     if (routePath.startsWith('/api/backup/')) {
       if (user.role !== 'admin') {
         return reply.status(403).send({ error: 'Only the Shop Admin can create backups.' });
@@ -132,6 +141,7 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
 
     const isTransactionWrite = request.method !== 'GET' && (
       routePath.startsWith('/api/pos/')
+      || routePath === '/api/reports/returns'
       || routePath.startsWith('/api/purchases')
       || routePath.startsWith('/api/cashbook/')
       || (routePath.startsWith('/api/customers/') && routePath.includes('/payment'))

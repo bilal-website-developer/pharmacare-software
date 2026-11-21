@@ -111,12 +111,49 @@ export function registerPurchaseRoutes(app: FastifyInstance, db: Database.Databa
         const prSeq = (countRow.cnt + 1).toString().padStart(4, '0');
         const purchaseNumber = `PR-${prSeq}`;
         const purchaseId = crypto.randomUUID();
+        const subtotalPaisa = body.items.reduce(
+          (subtotal, item) => subtotal + item.quantity * item.costPerPackPaisa,
+          0,
+        );
+        const discountPaisa = body.discountPaisa || 0;
+        if (!Number.isSafeInteger(discountPaisa) || discountPaisa < 0 || discountPaisa > subtotalPaisa) {
+          throw new Error('Discount must be a non-negative amount no greater than the subtotal.');
+        }
+        const totalAmountPaisa = subtotalPaisa - discountPaisa;
+        const requestedPaid = body.paidAmountPaisa || 0;
+        if (!Number.isSafeInteger(requestedPaid) || requestedPaid < 0) {
+          throw new Error('Paid amount must be a non-negative whole number of paisa.');
+        }
+        const paidAmountPaisa = Math.min(totalAmountPaisa, requestedPaid);
+        const paymentStatus = paidAmountPaisa === totalAmountPaisa ? 'PAID' : (paidAmountPaisa > 0 ? 'PARTIAL' : 'CREDIT');
+        const unpaidPaisa = totalAmountPaisa - paidAmountPaisa;
+        const paymentMethod = body.paymentMethod === 'CASH' ? 'CASH' : 'CREDIT';
 
-        let subtotalPaisa = 0;
+        db.prepare(`
+          INSERT INTO purchases (
+            id, purchase_number, supplier_id, invoice_number, purchase_date, total_amount_paisa,
+            subtotal_amount_paisa, discount_amount_paisa, paid_amount_paisa, payment_method,
+            payment_status, notes, created_by, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          purchaseId,
+          purchaseNumber,
+          supplier.id,
+          body.invoiceNumber,
+          today,
+          totalAmountPaisa,
+          subtotalPaisa,
+          discountPaisa,
+          paidAmountPaisa,
+          paymentMethod,
+          paymentStatus,
+          body.notes || null,
+          user.userId,
+          now
+        );
 
         for (const item of body.items) {
           const itemTotal = item.quantity * item.costPerPackPaisa;
-          subtotalPaisa += itemTotal;
           const bonusQty = item.bonusQty || 0;
 
           const purchaseItemId = crypto.randomUUID();
@@ -182,44 +219,6 @@ export function registerPurchaseRoutes(app: FastifyInstance, db: Database.Databa
             now
           );
         }
-
-        const discountPaisa = body.discountPaisa || 0;
-        if (!Number.isSafeInteger(discountPaisa) || discountPaisa < 0 || discountPaisa > subtotalPaisa) {
-          throw new Error('Discount must be a non-negative amount no greater than the subtotal.');
-        }
-        const totalAmountPaisa = subtotalPaisa - discountPaisa;
-        const requestedPaid = body.paidAmountPaisa || 0;
-        if (!Number.isSafeInteger(requestedPaid) || requestedPaid < 0) {
-          throw new Error('Paid amount must be a non-negative whole number of paisa.');
-        }
-        const paidAmountPaisa = Math.min(totalAmountPaisa, requestedPaid);
-        const paymentStatus = paidAmountPaisa === totalAmountPaisa ? 'PAID' : (paidAmountPaisa > 0 ? 'PARTIAL' : 'CREDIT');
-        const unpaidPaisa = totalAmountPaisa - paidAmountPaisa;
-        const paymentMethod = body.paymentMethod === 'CASH' ? 'CASH' : 'CREDIT';
-
-        // Insert purchase record
-        db.prepare(`
-          INSERT INTO purchases (
-            id, purchase_number, supplier_id, invoice_number, purchase_date, total_amount_paisa,
-            subtotal_amount_paisa, discount_amount_paisa, paid_amount_paisa, payment_method,
-            payment_status, notes, created_by, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          purchaseId,
-          purchaseNumber,
-          supplier.id,
-          body.invoiceNumber,
-          today,
-          totalAmountPaisa,
-          subtotalPaisa,
-          discountPaisa,
-          paidAmountPaisa,
-          paymentMethod,
-          paymentStatus,
-          body.notes || null,
-          user.userId,
-          now
-        );
 
         // Update supplier balance if there is unpaid credit
         if (unpaidPaisa > 0) {

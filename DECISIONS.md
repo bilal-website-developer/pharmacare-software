@@ -48,6 +48,14 @@ Portable backups use an authenticated AES-256-GCM envelope to wrap the random lo
 
 Daily backups remain scheduled automatically and are portable when a recovery key is configured; Settings exposes manual portable export/restore, and the login screen allows recovery before sign-in on a replacement PC. Restore keeps rollback copies of the database and protected keys and updates the in-process database key before restarting the local API; error rollback is implemented but packaged restore acceptance remains outstanding. The license remains device-bound and requires operator reissue after transfer. CSV/XLSX exports reuse the records filtered by the respective screens. Export coverage and local data-path parity remain incomplete and are not release acceptance.
 
+## 2026-11-22 desktop entitlement and E2E continuation
+
+The existing page/feature permission keys are carried in the central signed license, persisted and verified by the local backend, and used by desktop navigation and local route authorization. Licenses predating these fields retain the backward-compatible all-enabled default. The separate return-request/review workflow and unsupported Shops, Demo, WhatsApp Reminders, and Print Requests are hidden in desktop mode; direct medicine returns within POS use the local API.
+
+The Playwright Electron test uses a freshly generated temporary Ed25519 keypair, temporary profile/database, and test-only development file selection for portable backup/restore. It does not read or modify `central-backend/.dev/`, `.env`, or the user's real Electron profile. Keep test file-path overrides disabled for packaged builds. Purchases and returns must create their parent transaction rows before dependent items inside the same SQLite transaction; the E2E regression covers both operations.
+
+E2E acceptance covers the desktop activation/admin setup, navigation/rendering of the supported v1 sidebar, representative medicine/supplier/customer CRUD through local APIs, purchase, cash and split sales, POS return, export requests, backup/restore, and offline reopen. It is not a full per-screen CRUD matrix or role-by-role qualification; exports are asserted at the renderer download boundary, and printer hardware, production central licensing, clean-machine install/upgrade, and replacement-device license reissue remain unverified.
+
 ## 2026-11-21 desktop continuation
 
 The local Windows packaging environment successfully rebuilt the SQLite native module and produced an unsigned NSIS installer. A packaged-app startup smoke test exposed and fixed the backend standalone-runner guard and an IPC packaged-renderer URL check. At that validation point the installer had not been tested through activation or business workflows; a later local-only licensing service now has API activation/check-in coverage, but packaged workflows and production central activation remain unverified.

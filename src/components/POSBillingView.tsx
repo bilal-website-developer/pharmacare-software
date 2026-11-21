@@ -51,7 +51,9 @@ import { STOCK_CHANGED_EVENT } from '../utils/stockAlertsEvents';
 import { DEMO_DATA_CHANGED_EVENT } from '../data/demoDataManager';
 import { postSale, type PostSaleInput } from '../data/sales';
 import { SaleReturnsPanel } from './returns/SaleReturnsPanel';
+import { DirectSaleReturnPanel } from './returns/DirectSaleReturnPanel';
 import { PaymentProviderSelect } from './PaymentProviderSelect';
+import { isDesktopMode } from '../services/localApi';
 import { isValidOptionalPhone, resolvePosCustomerName } from '../utils/posCustomer';
 import { readHeldBills, writeHeldBills, type HeldBill } from '../utils/heldBills';
 import { getSplitPaymentSummary, parsePaisaAmount } from '../utils/splitPayments';
@@ -1428,7 +1430,12 @@ export const POSBillingView: React.FC<POSBillingViewProps> = ({
                 <span>Sale</span>
               </button>
 
-              {disableLiveReturns ? (
+              {isDesktopMode() ? (
+                <DirectSaleReturnPanel
+                  onOpenChange={setReturnsPanelOpen}
+                  triggerClassName="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 text-muted hover:bg-surface-2 border-0 bg-transparent shadow-none"
+                />
+              ) : disableLiveReturns ? (
                 <button
                   type="button"
                   onClick={() => setDisplayNotice('Demo returns are available from Sales History.')}

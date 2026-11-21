@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { UserRole } from './types/pharmacy';
 import {
+  ALL_LICENSE_PAGES,
   canAccessModule,
   canAccessPage,
   canEditSettingsSection,
   hasPosPrintToggles,
+  isLicensePageIncluded,
   MODULES,
   SETTINGS_SECTION_PERMISSIONS,
   normalizePermissionSelection,
@@ -96,4 +98,13 @@ test('Admin pages follow explicit grants and Super Admin is platform-only', () =
   assert.equal(canAccessPage(UserRole.CASHIER, ['customers'], 'customer-ledger'), true);
   assert.equal(canAccessPage(UserRole.CASHIER, [], 'dashboard'), true);
   assert.equal(canAccessPage(UserRole.CASHIER, [], 'help-support'), true);
+});
+
+test('license page entitlements hide disabled modules and unsupported desktop pages', () => {
+  assert.equal(isLicensePageIncluded('pos', ['pos']), true);
+  assert.equal(isLicensePageIncluded('products', ['pos']), false);
+  assert.equal(isLicensePageIncluded('dashboard', []), true);
+  assert.equal(isLicensePageIncluded('my-print-requests', ['pos', 'customers'], ['my-print-requests']), false);
+  assert.equal(isLicensePageIncluded('shops', [], ['shops']), false);
+  assert.equal(isLicensePageIncluded('pos', ALL_LICENSE_PAGES), true);
 });

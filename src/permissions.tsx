@@ -1,35 +1,26 @@
 import React, { createContext, useContext, useMemo } from 'react';
 import { UserRole } from './types/pharmacy';
 import { getSidebarPage } from './components/sidebarPages';
+import {
+  ALL_LICENSE_FEATURES,
+  ALL_LICENSE_PAGES,
+  MODULES,
+  POS_PRINT_PERMISSION_KEYS,
+  SETTINGS_SECTION_PERMISSIONS,
+  type LicenseFeatureKey,
+} from '../central-backend/src/entitlementModel';
 
-export const MODULES = [
-  { key: 'pos', label: 'POS Billing' },
-  { key: 'products', label: 'Products' },
-  { key: 'categories', label: 'Categories' },
-  { key: 'suppliers', label: 'Suppliers' },
-  { key: 'customers', label: 'Customers' },
-  { key: 'sales_history', label: 'Sales History' },
-  { key: 'purchase_history', label: 'Purchase History' },
-  { key: 'purchases', label: 'Purchases' },
-  { key: 'expenses', label: 'Expenses' },
-  { key: 'stock_inventory', label: 'Stock Inventory' },
-  { key: 'reports', label: 'Reports' },
-  { key: 'manage_users', label: 'Manage Users' },
-  { key: 'settings', label: 'Settings' },
-] as const;
+export {
+  ALL_LICENSE_FEATURES,
+  ALL_LICENSE_PAGES,
+  MODULES,
+  POS_PRINT_PERMISSION_KEYS,
+  SETTINGS_SECTION_PERMISSIONS,
+};
 
 export type ModuleKey = (typeof MODULES)[number]['key'];
 
-export const POS_PRINT_PERMISSION_KEYS = ['pos_print_sale', 'pos_print_payment'] as const;
 export type PosPrintPermissionKey = (typeof POS_PRINT_PERMISSION_KEYS)[number];
-export const SETTINGS_SECTION_PERMISSIONS = [
-  { key: 'settings_shop_profile', label: 'Shop profile' },
-  { key: 'settings_receipt_memo', label: 'Receipt and memo' },
-  { key: 'settings_receipt_qr', label: 'Receipt QR' },
-  { key: 'settings_operations', label: 'Operational limits' },
-  { key: 'settings_demo_data', label: 'Demo data' },
-  { key: 'settings_whatsapp_templates', label: 'WhatsApp templates' },
-] as const;
 export type SettingsSectionPermissionKey = (typeof SETTINGS_SECTION_PERMISSIONS)[number]['key'];
 export type PermissionKey = ModuleKey | PosPrintPermissionKey | SettingsSectionPermissionKey;
 
@@ -129,6 +120,16 @@ export function canAccessPage(role: UserRole, permissions: readonly string[], pa
   return page.module ? canAccessModule(role, permissions, page.module) : true;
 }
 
+export function isLicensePageIncluded(
+  pageKey: string,
+  enabledPages: readonly string[],
+  disabledPages: readonly string[] = [],
+): boolean {
+  const page = getSidebarPage(pageKey);
+  if (disabledPages.includes(pageKey)) return false;
+  return !page?.module || enabledPages.includes(page.module);
+}
+
 export function canEditSettingsSection(
   role: UserRole,
   permissions: readonly string[],
@@ -146,21 +147,37 @@ interface PermissionContextValue {
   isAdmin: boolean;
   can: (moduleKey: ModuleKey) => boolean;
   canPage: (pageKey: string) => boolean;
+  isPageIncluded: (pageKey: string) => boolean;
+  hasFeature: (featureKey: LicenseFeatureKey) => boolean;
 }
 
 const PermissionContext = createContext<PermissionContextValue | null>(null);
+const EMPTY_PAGE_KEYS: readonly string[] = [];
 
 export function PermissionsProvider({
   role,
   permissions,
+  enabledPages = ALL_LICENSE_PAGES,
+  enabledFeatures = ALL_LICENSE_FEATURES,
+  disabledPages = EMPTY_PAGE_KEYS,
   children,
-}: React.PropsWithChildren<{ role: UserRole; permissions: readonly string[] }>) {
+}: React.PropsWithChildren<{
+  role: UserRole;
+  permissions: readonly string[];
+  enabledPages?: readonly string[];
+  enabledFeatures?: readonly string[];
+  disabledPages?: readonly string[];
+}>) {
   const value = useMemo<PermissionContextValue>(() => {
     const isAdmin = isAdminRole(role);
     const can = (moduleKey: ModuleKey) => canAccessModule(role, permissions, moduleKey);
-    const canPage = (pageKey: string) => canAccessPage(role, permissions, pageKey);
-    return { isAdmin, can, canPage };
-  }, [role, permissions]);
+    const isPageIncluded = (pageKey: string) =>
+      isLicensePageIncluded(pageKey, enabledPages, disabledPages);
+    const canPage = (pageKey: string) => isPageIncluded(pageKey)
+      && canAccessPage(role, permissions, pageKey);
+    const hasFeature = (featureKey: LicenseFeatureKey) => enabledFeatures.includes(featureKey);
+    return { isAdmin, can, canPage, isPageIncluded, hasFeature };
+  }, [role, permissions, enabledPages, enabledFeatures, disabledPages]);
   return (
     <PermissionContext.Provider value={value}>
       {children}

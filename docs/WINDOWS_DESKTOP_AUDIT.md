@@ -1,13 +1,21 @@
 # Pharma Care Windows Desktop Audit and Roadmap
 
-**Audit date:** 2026-11-21
-**Basis:** Checked-in source and configuration. No live Supabase project or production credentials/deployment were accessed. The local development licensing service and portable backup implementation were unit/API tested; latest packaged workflow acceptance remains pending.
+**Audit date:** 2026-11-21 (updated 2026-11-22)
+**Basis:** Checked-in source and configuration, plus a Playwright Electron test using temporary local development keys and profile. No live Supabase project or production credentials/deployment were accessed.
 
 ## Executive summary
 
 The existing React application is substantial and should be preserved. This copy now has a desktop renderer build, a secure Electron/preload foundation, a local encrypted SQLite backend, a loopback development licensing service, portable recovery-key backups, and filtered CSV/XLSX exports on several screens. It is **not a complete offline desktop product**: feature parity and export coverage remain partial, production activation is not configured, and the complete packaged pharmacy workflow has not been accepted.
 
 **Recommendation:** Continue in place in this standalone copy. Its previous Git history and remote were intentionally removed, and it now has a fresh local-only repository. Preserve the React UI. Do not distribute the desktop application or expose the central API as production-ready until the remaining parity, licensing, restore/recovery, installer, and deployment gates below are satisfied.
+
+### 2026-11-22 verification update
+
+The signed desktop license carries the existing per-shop page and feature grants; the local backend verifies and stores them and denies routes whose page is not enabled. Older signed licenses with no entitlement arrays default to all supported access. Shops, Demo, WhatsApp Reminders, My Print Requests, Print Requests, and the separate returns request/approval workflow are hidden in the desktop edition; direct medicine returns inside POS use the local backend.
+
+`npm run desktop:e2e` passed against a generated temporary Ed25519 keypair, temporary licensing-service state, and temporary Electron profile. It activates, sets up the first Shop Admin, visits every supported v1 sidebar page, checks representative local create/edit/reload behavior, posts a purchase and cash/split sales, processes a POS return, checks CSV/XLSX export requests, performs encrypted and portable backup/restore, checks restored records, then closes/reopens Electron and logs in with the licensing service stopped. This is not a full CRUD matrix for every page, role-by-role qualification, production activation, printer test, cross-PC restore, or clean-installer acceptance. The test found and fixed purchase-item and return-item foreign-key ordering defects.
+
+The app remains unsuitable for production deployment until remaining browser-local settings/drafts and partial data workflows are resolved, authorization is reviewed across every local route, the unsigned installer is verified on a clean Windows machine, production central deployment is configured, and the replacement-device license process is tested. Current screen-level statuses are recorded in [PARITY_GAPS.md](./PARITY_GAPS.md).
 
 ## 1. Existing project audit
 

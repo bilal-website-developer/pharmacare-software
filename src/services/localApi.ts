@@ -22,6 +22,8 @@ export interface LocalLicenseStatus {
   isActivated: boolean;
   shopName: string;
   requiresAdminSetup: boolean;
+  enabledPages: string[];
+  enabledFeatures: string[];
   message?: string;
 }
 

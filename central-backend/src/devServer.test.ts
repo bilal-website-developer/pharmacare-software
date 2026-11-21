@@ -25,6 +25,8 @@ test('local development central activates once and renews only the bound device'
     activationCodeHash: hashActivationCode(activationCode),
     activationUsed: false,
     hardwareId: null,
+    enabledPages: ['pos'],
+    enabledFeatures: [],
   }));
   const app = buildDevelopmentLicensingServer(configDir);
   t.after(async () => {
@@ -42,6 +44,8 @@ test('local development central activates once and renews only the bound device'
   const activationResult = activation.json();
   assert.equal(activationResult.shop.shop_name, 'Local Dev Pharmacy');
   const [header, payload, signature] = activationResult.licenseToken.split('.');
+  assert.deepEqual(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')).enabledPages, ['pos']);
+  assert.deepEqual(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')).enabledFeatures, []);
   assert.equal(crypto.verify(
     null,
     Buffer.from(`${header}.${payload}`),

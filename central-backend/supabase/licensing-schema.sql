@@ -19,11 +19,60 @@ create table if not exists public.licenses (
   grace_days integer not null default 30,
   max_devices integer not null default 1,
   status text not null default 'ACTIVE' check (status in ('ACTIVE', 'SUSPENDED', 'REVOKED')),
+  enabled_pages text[] not null default array[
+    'pos', 'products', 'categories', 'suppliers', 'customers', 'sales_history',
+    'purchase_history', 'purchases', 'expenses', 'stock_inventory', 'reports',
+    'manage_users', 'settings'
+  ]::text[],
+  enabled_features text[] not null default array[
+    'pos_print_sale', 'pos_print_payment', 'settings_shop_profile',
+    'settings_receipt_memo', 'settings_receipt_qr', 'settings_operations',
+    'settings_demo_data', 'settings_whatsapp_templates'
+  ]::text[],
   created_at timestamptz not null default now()
 );
 
 alter table public.licenses
   add column if not exists status text not null default 'ACTIVE';
+
+alter table public.licenses
+  add column if not exists enabled_pages text[] not null default array[
+    'pos', 'products', 'categories', 'suppliers', 'customers', 'sales_history',
+    'purchase_history', 'purchases', 'expenses', 'stock_inventory', 'reports',
+    'manage_users', 'settings'
+  ]::text[],
+  add column if not exists enabled_features text[] not null default array[
+    'pos_print_sale', 'pos_print_payment', 'settings_shop_profile',
+    'settings_receipt_memo', 'settings_receipt_qr', 'settings_operations',
+    'settings_demo_data', 'settings_whatsapp_templates'
+  ]::text[];
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'licenses_enabled_pages_valid'
+  ) then
+    alter table public.licenses add constraint licenses_enabled_pages_valid check (
+      enabled_pages <@ array[
+        'pos', 'products', 'categories', 'suppliers', 'customers', 'sales_history',
+        'purchase_history', 'purchases', 'expenses', 'stock_inventory', 'reports',
+        'manage_users', 'settings'
+      ]::text[]
+    );
+  end if;
+  if not exists (
+    select 1 from pg_constraint where conname = 'licenses_enabled_features_valid'
+  ) then
+    alter table public.licenses add constraint licenses_enabled_features_valid check (
+      enabled_features <@ array[
+        'pos_print_sale', 'pos_print_payment', 'settings_shop_profile',
+        'settings_receipt_memo', 'settings_receipt_qr', 'settings_operations',
+        'settings_demo_data', 'settings_whatsapp_templates'
+      ]::text[]
+    );
+  end if;
+end;
+$$;
 
 create table if not exists public.developer_owners (
   user_id uuid primary key references auth.users(id) on delete cascade,

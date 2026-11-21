@@ -11,6 +11,7 @@ import { createLocalUser, authenticateLocalUser } from './services/authService';
 import { allocateFefoStock } from './services/fefoEngine';
 import { canViewCost } from './services/costRedactor';
 import { activateShopLicense, checkLicenseStatus, recordSuccessfulCheckin } from './services/licenseService';
+import { LICENSE_PAGE_KEYS } from './services/licenseAccess';
 
 const licenseKeyPair = generateKeyPairSync('ed25519');
 process.env.CENTRAL_LICENSE_PUBLIC_KEY = licenseKeyPair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
@@ -143,7 +144,7 @@ test('Phase 1: Local Backend & SQLite Core Verification', async (t) => {
     }
   });
 
-  await t.test('5. License status and offline grace period', () => {
+  await t.test('5. License status and offline grace period', async () => {
     // Initially unactivated
     const initialStatus = checkLicenseStatus(db);
     assert.equal(initialStatus.status, 'UNACTIVATED');
@@ -169,6 +170,29 @@ test('Phase 1: Local Backend & SQLite Core Verification', async (t) => {
     assert.equal(activeStatus.status, 'ACTIVE');
     assert.equal(activeStatus.allowNewTransactions, true);
     assert.equal(activeStatus.shopName, 'Test Pharmacy Shop');
+    assert.deepEqual(activeStatus.enabledPages, LICENSE_PAGE_KEYS);
+
+    recordSuccessfulCheckin(db, createTestLicenseToken({
+      enabledPages: ['pos'],
+      enabledFeatures: [],
+    }), 'HW-UUID-1234');
+    const limitedStatus = checkLicenseStatus(db);
+    assert.deepEqual(limitedStatus.enabledPages, ['pos']);
+    assert.deepEqual(limitedStatus.enabledFeatures, []);
+    const adminToken = app.jwt.sign({
+      userId: adminId,
+      username: 'shopadmin',
+      role: 'admin',
+      permissions: [],
+    });
+    const planDenied = await app.inject({
+      method: 'GET',
+      url: '/api/suppliers',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    assert.equal(planDenied.statusCode, 403);
+    assert.match(planDenied.json().error, /not included in the pharmacy license plan/i);
+    recordSuccessfulCheckin(db, createTestLicenseToken(), 'HW-UUID-1234');
 
     const storedToken = (db.prepare('SELECT license_token FROM license_store WHERE id = 1').get() as { license_token: string }).license_token;
     db.prepare('UPDATE license_store SET license_token = ? WHERE id = 1')

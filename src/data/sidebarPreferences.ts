@@ -10,9 +10,17 @@ export interface SidebarPreferences {
   loadFailed: boolean;
 }
 
-export function visibleSidebarPageKeys(role: UserRole, permissions: readonly string[]): SidebarPageKey[] {
+export function visibleSidebarPageKeys(
+  role: UserRole,
+  permissions: readonly string[],
+  enabledPages?: readonly string[],
+  disabledPages: readonly SidebarPageKey[] = [],
+): SidebarPageKey[] {
   return SIDEBAR_PAGES
-    .filter((page) => page.sidebar !== false && canAccessPage(role, permissions, page.key))
+    .filter((page) => page.sidebar !== false
+      && !disabledPages.includes(page.key)
+      && (!page.module || !enabledPages || enabledPages.includes(page.module))
+      && canAccessPage(role, permissions, page.key))
     .map((page) => page.key);
 }
 

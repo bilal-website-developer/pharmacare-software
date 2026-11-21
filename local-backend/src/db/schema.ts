@@ -415,6 +415,8 @@ export function initializeSchema(db: Database.Database): void {
       last_verified_online INTEGER NOT NULL DEFAULT 0,
       last_system_time INTEGER NOT NULL DEFAULT 0,
       offline_grace_seconds INTEGER NOT NULL DEFAULT 2592000,
+      enabled_pages TEXT NOT NULL DEFAULT '["pos","products","categories","suppliers","customers","sales_history","purchase_history","purchases","expenses","stock_inventory","reports","manage_users","settings"]',
+      enabled_features TEXT NOT NULL DEFAULT '["pos_print_sale","pos_print_payment","settings_shop_profile","settings_receipt_memo","settings_receipt_qr","settings_operations","settings_demo_data","settings_whatsapp_templates"]',
       status TEXT NOT NULL DEFAULT 'UNACTIVATED' CHECK(status IN ('UNACTIVATED', 'ACTIVE', 'WARNING', 'RESTRICTED'))
     );
 
@@ -565,5 +567,18 @@ export function initializeSchema(db: Database.Database): void {
   db.prepare(`
     INSERT OR IGNORE INTO schema_migrations (version, applied_at)
     VALUES (8, ?)
+  `).run(Math.floor(Date.now() / 1000));
+  const licenseColumns = new Set(
+    (db.pragma('table_info(license_store)') as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!licenseColumns.has('enabled_pages')) {
+    db.exec(`ALTER TABLE license_store ADD COLUMN enabled_pages TEXT NOT NULL DEFAULT '["pos","products","categories","suppliers","customers","sales_history","purchase_history","purchases","expenses","stock_inventory","reports","manage_users","settings"]'`);
+  }
+  if (!licenseColumns.has('enabled_features')) {
+    db.exec(`ALTER TABLE license_store ADD COLUMN enabled_features TEXT NOT NULL DEFAULT '["pos_print_sale","pos_print_payment","settings_shop_profile","settings_receipt_memo","settings_receipt_qr","settings_operations","settings_demo_data","settings_whatsapp_templates"]'`);
+  }
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+    VALUES (9, ?)
   `).run(Math.floor(Date.now() / 1000));
 }

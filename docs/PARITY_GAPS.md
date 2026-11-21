@@ -1,6 +1,6 @@
 # Desktop Data-Path Parity Gaps
 
-This is a source inventory of Supabase, browser-storage, demo, and in-memory paths reachable from the desktop renderer, based on the `src/` scan performed on 2026-11-21. A web-only Supabase branch is still listed when its containing screen ships in the desktop bundle. Local adapters take precedence only where explicitly noted; the desktop Supabase module resolves to `null`, so an unadapted branch is a functional gap, not an online fallback.
+This is a source inventory of Supabase, browser-storage, demo, and in-memory paths reachable from the desktop renderer, updated 2026-11-22. A web-only Supabase branch is still listed when its containing screen ships in the desktop bundle. Local adapters take precedence only where explicitly noted; the desktop Supabase module resolves to `null`, so an unadapted branch is a functional gap, not an online fallback. The `npm run desktop:e2e` test validates navigation/rendering for the supported v1 pages and representative local business workflows; it is not full per-page CRUD or role-by-role acceptance.
 
 ## Supabase call sites
 
@@ -17,8 +17,8 @@ This is a source inventory of Supabase, browser-storage, demo, and in-memory pat
 | Shop profile and logo | `src/data/shopProfile.ts` | `update_current_shop_profile`, `prepare_current_shop_logo_upload`, Supabase Storage | Profile fields have a local backend path; Supabase Storage upload has no equivalent and is not portable local file storage. |
 | POS catalog | `src/data/posCatalog.ts` | `pos_catalog` | Local inventory/catalog API is used in desktop mode. |
 | Sales, customer accounts, and payments | `src/data/sales.ts` | Generic RPC helper; `post_sale_with_payment_details`, `pos_customers`, `customer_accounts_summary`, `save_customer`, `record_customer_payment`, sales-history and profit-summary RPCs | POS checkout, customers, payments, sales history, and profit summary have local adapters. Return workflows routed through this generic helper do not. |
-| Sale returns | `src/data/saleReturns.ts`, `src/components/returns/SaleReturnsPanel.tsx` | `resolve_receipt_link`, `get_return_policy_settings`, `update_return_policy_settings`, `sale_for_return`, `request_sale_return`, `pending_sale_returns`, `process_sale_return`, `reject_sale_return` | **Not adapted.** Local schema has basic completed-return tables and a simpler report endpoint, but the request/review workflow, policy, and receipt-token lookup do not have compatible local routes. |
-| Demo-data manager | `src/data/demoDataManager.ts`, `src/components/SettingsView.tsx` | `save_medicine`, `products_bulk_update`, `purchase_catalog`, `activate_supplier`, `save_supplier`, `post_purchase`, `deactivate_supplier` | Tenant demo controls are hidden/disabled in the desktop UI; the data module itself remains web-only and must not be used by desktop actions. |
+| Sale returns | `src/data/saleReturns.ts`, `src/components/returns/SaleReturnsPanel.tsx`, `src/components/returns/DirectSaleReturnPanel.tsx`, `local-backend/src/routes/reportRoutes.ts` | Web request/review RPCs; local `/api/pos/return-sales` and `/api/reports/returns` | Direct medicine returns in POS use local routes, including sale-item and cumulative-quantity validation; return disposition is persisted. The separate request/approval workflow and public receipt-token lookup are intentionally unavailable in desktop mode. Purchase and return transaction ordering has an Electron E2E regression test. |
+| Demo-data manager | `src/data/demoDataManager.ts`, `src/components/SettingsView.tsx` | `save_medicine`, `products_bulk_update`, `purchase_catalog`, `activate_supplier`, `save_supplier`, `post_purchase`, `deactivate_supplier` | Tenant demo controls and Demo page are hidden in desktop mode; the module is web-only and must not be used by desktop actions. |
 | Categories, manufacturers, medicine units | `src/components/MasterDataView.tsx` | `medicine_units`, `medicines`, category/brand/unit save RPCs | Local master-data routes cover categories, manufacturers, and units; Supabase reads/writes remain for web mode. |
 | Products and product units | `src/components/InventoryScreen.tsx` | `categories`, `brands`, `medicine_units`; `products_import_preview`, `products_bulk_import`, `products_bulk_update`, `assign_medicine_barcode`, `assign_missing_barcodes`, `save_medicine` | Local listing, product save/edit, import preview/import, bulk actions, and barcode routes exist. Re-test full UI/import/export workflows before release. |
 | Stock inventory | `src/components/inventory/StockInventory.tsx` | Stock/batch and adjustment RPC-shaped operations | Local batch, overview, and adjustment routes exist. Export and role coverage still need end-to-end acceptance. |
@@ -29,6 +29,21 @@ This is a source inventory of Supabase, browser-storage, demo, and in-memory pat
 | Trash Bin | `src/components/TrashBinView.tsx` | `trash_bin_events_list`, `restore_trash_medicine`, `restore_trash_supplier`, `trash_bin_permanently_delete` | Local trash routes cover selected entities/actions; parity and destructive-action acceptance remain incomplete. |
 | Shop administration | `src/components/ShopsView.tsx` | Supabase Auth/database shop and account APIs | Super Admin Shops is a web/central administration workflow and is not a local shop operation. Keep it unavailable in the desktop shop shell. |
 | Cross-screen table paging | `src/utils/fetchAllSupabaseRows.ts` | Supabase `.range()` pagination helper | Used by web branches of inventory/master-data screens. Desktop adapters must not call this helper. |
+
+## Desktop v1 pages and workflows
+
+| Screen / workflow | Local path | Status and verification |
+|---|---|---|
+| Dashboard | local dashboard/report APIs and settings | Navigation/rendering included in E2E; summary metrics are locally loaded. |
+| POS Billing | `/api/pos/*`, customer APIs, `/api/reports/returns` | E2E covers cash and split payments and direct return; hardware printing and every discount/credit edge are not covered. |
+| Products, Categories, Stock Inventory | inventory, master-data, stock APIs | E2E covers medicine create/edit and reload plus category create/edit; full UI delete/import/adjustment matrix is not covered. |
+| Suppliers, Purchases, Purchase History | `/api/suppliers`, `/api/purchases/*` | E2E creates supplier and purchase; purchase history rendering route is covered, but every UI filter/void/edit path is not. |
+| Customer Ledger, Sales History | `/api/customers`, `/api/reports/*` | E2E creates/edits a customer and validates sale/return persistence after reload and offline reopen; ledger payment lifecycle is not fully covered. |
+| Expenses / Cashbook | `/api/cashbook/*` | E2E records an expense and verifies export requests; shift-close and every filter are not covered. |
+| Business Analytics | `/api/reports/*` | E2E verifies the page renders; full metric reconciliation and every filter are not covered. |
+| Manage Users, Settings, Trash Bin | auth/users, settings, trash local APIs | E2E verifies supported pages render. Role-by-role account management, restore/purge safety matrix, and every settings control are not covered. |
+| Backups and restore | Electron backup IPC and local encrypted database | E2E creates a standard and portable backup, restores the portable file, checks reverted data, closes/reopens offline, and logs in. Cross-PC restore and device-license reissue are not verified. |
+| Unsupported | Shops, Demo, WhatsApp Reminders, My Print Requests, Print Requests, return request/approval | Hidden in desktop mode. No offline service is provided for these online/platform workflows. |
 
 ## Browser and in-memory persistence still present
 
@@ -52,4 +67,4 @@ This is a source inventory of Supabase, browser-storage, demo, and in-memory pat
 - The shared `callSupabaseRpc` helper now fails clearly in desktop mode before touching the null client, with a regression test. This is a fail-fast safety guard, not a local adapter; the calling feature remains unsupported until its local route is implemented.
 - Treat every row marked **Not adapted**, and every localStorage/in-memory row above, as a parity/release gate. Do not claim full offline operation until a desktop route or an intentional disabled-state test covers it.
 - The icon checker is a separate build guard and validates the transparent 512px PNG, all seven requested ICO frames, both development/packaged icon paths, AppUserModelID, and electron-builder icon settings.
-- Next highest-priority work: implement and test the complete local sale-return request/review workflow; add automated desktop screen/API coverage; migrate remaining settings and transient POS/purchase state; verify filtered exports for every required table; and run packaged role-by-role workflows.
+- Next highest-priority work: complete per-screen CRUD and role-by-role acceptance; migrate remaining settings and transient POS/purchase state; verify filtered exports for every required table and UI file output; and qualify a packaged installer on a clean Windows machine. The return request/approval workflow stays intentionally hidden unless its full policy and authorization model is ported.

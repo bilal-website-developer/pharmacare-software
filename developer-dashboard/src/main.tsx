@@ -1,6 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createClient } from '@supabase/supabase-js';
+import {
+  ALL_LICENSE_FEATURES,
+  ALL_LICENSE_PAGES,
+  MODULES,
+  POS_PRINT_PERMISSION_KEYS,
+  SETTINGS_SECTION_PERMISSIONS,
+  normalizeLicenseAccess,
+  type LicenseFeatureKey,
+  type LicensePageKey,
+} from '../../central-backend/src/entitlementModel';
 
 const centralUrl = import.meta.env.VITE_CENTRAL_API_URL;
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -11,6 +21,8 @@ interface License {
   expires_at: string | null;
   license_type: string;
   status: string;
+  enabled_pages: LicensePageKey[];
+  enabled_features: LicenseFeatureKey[];
 }
 
 interface Shop {
@@ -153,7 +165,13 @@ function App() {
     }
   }
 
-  async function saveLicense(shop: Shop, status: string, expiry: string) {
+  async function saveLicense(
+    shop: Shop,
+    status: string,
+    expiry: string,
+    enabledPages: LicensePageKey[],
+    enabledFeatures: LicenseFeatureKey[],
+  ) {
     setBusy(true);
     setError('');
     try {
@@ -162,6 +180,8 @@ function App() {
         body: JSON.stringify({
           status,
           licenseExpiresAt: expiry ? new Date(`${expiry}T23:59:59.999Z`).toISOString() : null,
+          enabledPages,
+          enabledFeatures,
         }),
       });
       await refreshShops();
@@ -241,10 +261,30 @@ function LicenseCard({
   shop: Shop;
   license?: License;
   busy: boolean;
-  onSave: (shop: Shop, status: string, expiry: string) => Promise<void>;
+  onSave: (
+    shop: Shop,
+    status: string,
+    expiry: string,
+    enabledPages: LicensePageKey[],
+    enabledFeatures: LicenseFeatureKey[],
+  ) => Promise<void>;
 }) {
   const [status, setStatus] = useState(shop.status);
   const [expiry, setExpiry] = useState(license?.expires_at?.slice(0, 10) || '');
+  const initialAccess = normalizeLicenseAccess(license?.enabled_pages, license?.enabled_features);
+  const [enabledPages, setEnabledPages] = useState<LicensePageKey[]>(
+    initialAccess?.enabledPages || ALL_LICENSE_PAGES,
+  );
+  const [enabledFeatures, setEnabledFeatures] = useState<LicenseFeatureKey[]>(
+    initialAccess?.enabledFeatures || ALL_LICENSE_FEATURES,
+  );
+  const toggleEntitlement = <T extends string,>(
+    selected: T[],
+    key: T,
+    update: (next: T[]) => void,
+  ) => {
+    update(selected.includes(key) ? selected.filter((item) => item !== key) : [...selected, key]);
+  };
   return (
     <section style={{ border: '1px solid #d0d5dd', borderRadius: 8, padding: 16 }}>
       <h3>{shop.shop_name} ({shop.shop_code})</h3>
@@ -254,8 +294,51 @@ function LicenseCard({
           <option value="ACTIVE">Active</option><option value="SUSPENDED">Suspended</option><option value="REVOKED">Revoked</option>
         </select></label>
         <label>Expires <input type="date" value={expiry} onChange={(event) => setExpiry(event.target.value)} /></label>
-        <button disabled={busy} onClick={() => void onSave(shop, status, expiry)}>Save license</button>
       </div>
+      <fieldset style={{ marginTop: 12 }}>
+        <legend>Included pages</legend>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 6 }}>
+          {MODULES.map(({ key, label }) => (
+            <label key={key}>
+              <input
+                type="checkbox"
+                checked={enabledPages.includes(key)}
+                onChange={() => toggleEntitlement(enabledPages, key, setEnabledPages)}
+              /> {label}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      <fieldset style={{ marginTop: 12 }}>
+        <legend>Included features</legend>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 6 }}>
+          {POS_PRINT_PERMISSION_KEYS.map((key) => (
+            <label key={key}>
+              <input
+                type="checkbox"
+                checked={enabledFeatures.includes(key)}
+                onChange={() => toggleEntitlement(enabledFeatures, key, setEnabledFeatures)}
+              /> {key === 'pos_print_sale' ? 'Print sale receipts' : 'Print payment receipts'}
+            </label>
+          ))}
+          {SETTINGS_SECTION_PERMISSIONS.map(({ key, label }) => (
+            <label key={key}>
+              <input
+                type="checkbox"
+                checked={enabledFeatures.includes(key)}
+                onChange={() => toggleEntitlement(enabledFeatures, key, setEnabledFeatures)}
+              /> {label}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      <button style={{ marginTop: 12 }} disabled={busy} onClick={() => void onSave(
+        shop,
+        status,
+        expiry,
+        enabledPages,
+        enabledFeatures,
+      )}>Save license</button>
     </section>
   );
 }

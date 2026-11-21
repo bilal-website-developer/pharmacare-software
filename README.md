@@ -1,6 +1,6 @@
 # Pharma Care
 
-This repository preserves the existing React/Vite pharmacy application and adds an Electron desktop shell with a local Fastify/encrypted-SQLite backend. Desktop conversion remains **in progress and not ready for pharmacy production use**: several feature screens still use Supabase/browser/in-memory paths, and packaged end-to-end pharmacy workflows have not been accepted.
+This repository preserves the existing React/Vite pharmacy application and adds an Electron desktop shell with a local Fastify/encrypted-SQLite backend. The desktop app now has a local development activation flow and an automated Electron acceptance test for activation, first-admin setup, v1 navigation, core transaction APIs, exports, backup/restore, and offline reopen. It is still **not ready for pharmacy production use**: some renderer preferences/drafts remain browser-local, unsupported online workflows are intentionally hidden, production licensing/deployment is unverified, and the installer is unsigned.
 
 ## Development
 
@@ -15,7 +15,7 @@ npm run build
 ```
 
 The existing web application runs at `http://localhost:3000`. The desktop renderer can be built with `npm run desktop:renderer`; this build deliberately disables loading `.env` files.
-`npm test` includes the local and central backend suites, plus focused renderer tests.
+`npm test` includes the local and central backend suites, plus focused renderer tests. `npm run desktop:e2e` launches Electron with a temporary profile and temporary local Ed25519 licensing service and exercises a representative offline workflow.
 The Electron shell uses hash routes (for example `index.html#/products`) so file-based navigation, refresh, and browser history work without changing the web app's pathname routes. Desktop print-request lists, approvals, modifications, print tracking, and pending counts use the local SQLite backend.
 
 ## Desktop development and packaging
@@ -46,7 +46,8 @@ Central licensing signs entitlements with an Ed25519 private key held only by th
 - A loopback-only local development licensing service now provisions a test pharmacy, one-time code, and ignored Ed25519 keypair; local activation/check-in behavior has focused tests.
 - Recovery-key portable backup and restore, first-admin recovery-key display, automatic daily backups, and filtered CSV/XLSX exports for several list/report screens have been implemented with focused tests. The local database restore does not perform device license reissue.
 - Local adapters now cover master data, product/import/barcode operations, stock batches and alerts, suppliers, purchases/history, users, trash, cashbook expenses, and sidebar preferences in addition to POS/customer/sales and print requests. Test coverage is API-focused; desktop role-by-role screen acceptance is still incomplete.
-- Offline parity is still incomplete. The sale-return request/review workflow has no compatible local route, public receipt QR lookup is online-only, several preferences and purchase drafts remain browser-local, and some receipt/profile and demo paths are disabled or incomplete. See [docs/PARITY_GAPS.md](./docs/PARITY_GAPS.md) for the source inventory and exact statuses.
+- POS direct medicine returns are processed through the local backend. The separate returns request/approval workflow, Shops, Demo, WhatsApp Reminders, and Print Requests are intentionally hidden in desktop mode; public receipt QR lookup remains web/online-only. Some UI preferences and purchase drafts remain browser-local and are not business-record persistence. See [docs/PARITY_GAPS.md](./docs/PARITY_GAPS.md) for screen-level status.
+- `npm run desktop:e2e` verifies local development activation, Shop Admin creation, navigation/rendering on every supported v1 sidebar page, a medicine and purchase, cash and split-payment sales, a POS return, CSV/XLSX export requests, encrypted and portable backup/restore, persistence after reload, and login after closing/reopening with the central service offline. It does not automate CRUD mutations on every page, exercise every account role, qualify printers, or prove production licensing/deployment.
 - The Pharma Care logo is packaged at `desktop-app/build/pharma-care.ico` and `desktop-app/build/icon.png`; the icon check verifies the 16/24/32/48/64/128/256px ICO frames, transparency, Electron paths, and installer configuration.
 - The central SQL schema must be applied to a configured Supabase project and the central service deployed before real production activation can work. See [docs/PRODUCTION_SETUP.md](./docs/PRODUCTION_SETUP.md).
 - Real production central signing/check-in and packaged role/workflow acceptance have not been completed. The development service is only for local testing.

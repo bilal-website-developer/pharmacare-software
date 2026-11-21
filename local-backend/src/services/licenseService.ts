@@ -1,5 +1,11 @@
 import Database from 'better-sqlite3-multiple-ciphers';
 import { verify } from 'node:crypto';
+import {
+  DEFAULT_LICENSE_ACCESS,
+  normalizeLicenseAccess,
+  type LicenseFeatureKey,
+  type LicensePageKey,
+} from './licenseAccess';
 
 export interface LicenseClaims {
   shopId: string;
@@ -8,6 +14,8 @@ export interface LicenseClaims {
   hardwareId: string;
   status: 'ACTIVE' | 'SUSPENDED' | 'REVOKED';
   graceDays: number;
+  enabledPages: LicensePageKey[];
+  enabledFeatures: LicenseFeatureKey[];
 }
 
 export function verifyLicenseToken(
@@ -28,7 +36,10 @@ export function verifyLicenseToken(
       Buffer.from(parts[2], 'base64url'),
     );
     if (!signatureIsValid) return null;
-    const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as Partial<LicenseClaims>;
+    const rawClaims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as Partial<LicenseClaims>;
+    const access = normalizeLicenseAccess(rawClaims.enabledPages, rawClaims.enabledFeatures);
+    if (!access) return null;
+    const claims = { ...rawClaims, ...access } as LicenseClaims;
     const expiry = typeof claims.expiresAt === 'string' ? Date.parse(claims.expiresAt) : NaN;
     if (
       typeof claims.shopId !== 'string' || !claims.shopId
@@ -52,6 +63,8 @@ export interface LicenseStatusResult {
   daysRemainingGrace: number;
   message?: string;
   allowNewTransactions: boolean;
+  enabledPages: LicensePageKey[];
+  enabledFeatures: LicenseFeatureKey[];
 }
 
 export function checkLicenseStatus(
@@ -68,6 +81,7 @@ export function checkLicenseStatus(
       daysRemainingGrace: 0,
       message: 'This application requires activation before use.',
       allowNewTransactions: false,
+      ...DEFAULT_LICENSE_ACCESS,
     };
   }
 
@@ -91,6 +105,7 @@ export function checkLicenseStatus(
       daysRemainingGrace: 0,
       message: 'The saved license signature or device binding could not be verified. Contact support.',
       allowNewTransactions: false,
+      ...DEFAULT_LICENSE_ACCESS,
     };
   }
 
@@ -104,6 +119,8 @@ export function checkLicenseStatus(
       daysRemainingGrace: 0,
       message: 'This pharmacy license has expired. Contact your administrator to renew it.',
       allowNewTransactions: false,
+      enabledPages: claims.enabledPages,
+      enabledFeatures: claims.enabledFeatures,
     };
   }
   if (claims.status !== 'ACTIVE') {
@@ -115,6 +132,8 @@ export function checkLicenseStatus(
       daysRemainingGrace: 0,
       message: `This pharmacy license is ${claims.status.toLowerCase()}. Contact your administrator.`,
       allowNewTransactions: false,
+      enabledPages: claims.enabledPages,
+      enabledFeatures: claims.enabledFeatures,
     };
   }
 
@@ -128,6 +147,8 @@ export function checkLicenseStatus(
       daysRemainingGrace: 0,
       message: 'System clock rollback detected. Please correct your system date and time to continue.',
       allowNewTransactions: false,
+      enabledPages: claims.enabledPages,
+      enabledFeatures: claims.enabledFeatures,
     };
   }
 
@@ -150,6 +171,8 @@ export function checkLicenseStatus(
       daysRemainingGrace: 0,
       message: 'Offline grace period exceeded. Please connect to the internet to verify your license.',
       allowNewTransactions: false,
+      enabledPages: claims.enabledPages,
+      enabledFeatures: claims.enabledFeatures,
     };
   }
 
@@ -162,6 +185,8 @@ export function checkLicenseStatus(
       daysRemainingGrace,
       message: `License check-in pending. ${daysRemainingGrace} days remaining in offline grace period.`,
       allowNewTransactions: true,
+      enabledPages: claims.enabledPages,
+      enabledFeatures: claims.enabledFeatures,
     };
   }
 
@@ -172,6 +197,8 @@ export function checkLicenseStatus(
     shopName: store.shop_name,
     daysRemainingGrace,
     allowNewTransactions: true,
+    enabledPages: claims.enabledPages,
+    enabledFeatures: claims.enabledFeatures,
   };
 }
 
@@ -210,6 +237,8 @@ export function activateShopLicense(
         last_verified_online = ?,
         last_system_time = ?,
         offline_grace_seconds = ?,
+        enabled_pages = ?,
+        enabled_features = ?,
         status = 'ACTIVE'
     WHERE id = 1
   `).run(
@@ -219,7 +248,9 @@ export function activateShopLicense(
     data.hardwareId,
     now,
     now,
-    claims.graceDays * 86400
+    claims.graceDays * 86400,
+    JSON.stringify(claims.enabledPages),
+    JSON.stringify(claims.enabledFeatures)
   );
 
   // Update shop_settings shop name as well
@@ -255,7 +286,16 @@ export function recordSuccessfulCheckin(db: Database.Database, licenseToken: str
         offline_grace_seconds = ?,
         last_verified_online = ?,
         last_system_time = ?,
+        enabled_pages = ?,
+        enabled_features = ?,
         status = 'ACTIVE'
     WHERE id = 1
-  `).run(licenseToken, claims.graceDays * 86400, now, now);
+  `).run(
+    licenseToken,
+    claims.graceDays * 86400,
+    now,
+    now,
+    JSON.stringify(claims.enabledPages),
+    JSON.stringify(claims.enabledFeatures),
+  );
 }

@@ -5,6 +5,60 @@ import { canViewCost } from '../services/costRedactor';
 import { localIsoDate, restoreBatchStock } from '../services/fefoEngine';
 
 export function registerReportRoutes(app: FastifyInstance, db: Database.Database): void {
+  app.get('/api/pos/return-sales', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const query = request.query as { limit?: string };
+      const limit = Math.max(1, Math.min(1000, parseInt(query.limit || '200', 10)));
+      const rows = db.prepare(`
+        WITH recent_sales AS (
+          SELECT id, invoice_number, created_at
+          FROM sales
+          ORDER BY created_at DESC
+          LIMIT ?
+        )
+        SELECT sale.id, sale.invoice_number, item.id AS sale_item_id,
+               item.medicine_name, item.unit_name, item.quantity_in_unit
+        FROM recent_sales sale
+        JOIN sale_items item ON item.sale_id = sale.id
+        ORDER BY sale.created_at DESC, item.rowid ASC
+      `).all(limit) as Array<{
+        id: string;
+        invoice_number: string;
+        sale_item_id: string;
+        medicine_name: string;
+        unit_name: string;
+        quantity_in_unit: number;
+      }>;
+      const sales = new Map<string, {
+        id: string;
+        invoiceNumber: string;
+        items: Array<{
+          saleItemId: string;
+          productName: string;
+          unitName: string;
+          quantityInUnit: number;
+        }>;
+      }>();
+      for (const row of rows) {
+        const sale = sales.get(row.id) || {
+          id: row.id,
+          invoiceNumber: row.invoice_number,
+          items: [],
+        };
+        sale.items.push({
+          saleItemId: row.sale_item_id,
+          productName: row.medicine_name,
+          unitName: row.unit_name,
+          quantityInUnit: row.quantity_in_unit,
+        });
+        sales.set(row.id, sale);
+      }
+      return reply.send([...sales.values()]);
+    } catch (error: any) {
+      return reply.status(500).send({ error: error.message });
+    }
+  });
+
   // 1. Sales History
   app.get('/api/reports/sales', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -73,6 +127,7 @@ export function registerReportRoutes(app: FastifyInstance, db: Database.Database
           genericName: item.generic_name,
           drugClass: item.drug_class,
           unitId: item.unit_id,
+          saleItemId: item.id,
           unitName: item.unit_name,
           conversionFactor: item.conversion_factor,
           quantityInUnit: item.quantity_in_unit,
@@ -187,13 +242,9 @@ export function registerReportRoutes(app: FastifyInstance, db: Database.Database
       await request.jwtVerify();
       const user = request.user as { userId: string; username: string; role: string };
 
-      if (user.role !== 'admin' && user.role !== 'manager') {
-        return reply.status(403).send({ error: 'Permission denied: Only managers or admins can approve returns.' });
-      }
-
       const body = request.body as {
-        saleId: string;
-        reason: string;
+        saleId?: string;
+        reason?: string;
         disposition: 'RESTOCK' | 'QUARANTINE' | 'WRITE_OFF';
         items: Array<{
           saleItemId: string;
@@ -201,9 +252,18 @@ export function registerReportRoutes(app: FastifyInstance, db: Database.Database
         }>;
       };
 
-      if (!body.saleId || !body.items || body.items.length === 0) {
+      if (
+        !body.saleId
+        || typeof body.reason !== 'string'
+        || !body.reason.trim()
+        || body.reason.length > 500
+        || !Array.isArray(body.items)
+        || body.items.length === 0
+        || !['RESTOCK', 'QUARANTINE', 'WRITE_OFF'].includes(body.disposition)
+      ) {
         return reply.status(400).send({ error: 'Sale ID and at least one item required.' });
       }
+      const returnReason = body.reason.trim();
 
       const today = localIsoDate();
       const now = Math.floor(Date.now() / 1000);
@@ -211,16 +271,53 @@ export function registerReportRoutes(app: FastifyInstance, db: Database.Database
       const transaction = db.transaction(() => {
         const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(body.saleId) as any;
         if (!sale) throw new Error('Sale not found.');
+        if (body.disposition === 'RESTOCK' && user.role !== 'admin' && user.role !== 'manager') {
+          throw new Error('Only managers or admins can restock returned medicine.');
+        }
 
         const returnId = crypto.randomUUID();
         const countRow = db.prepare('SELECT COUNT(*) as cnt FROM sale_returns').get() as { cnt: number };
         const returnNumber = `RET-${(countRow.cnt + 1).toString().padStart(4, '0')}`;
 
+        db.prepare(`
+          INSERT INTO sale_returns (
+            id, return_number, sale_id, invoice_number, customer_id, reason, total_refund_paisa, payment_method, approved_by, created_by, auto_processed, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 0, 'CASH', ?, ?, 0, ?)
+        `).run(
+          returnId,
+          returnNumber,
+          sale.id,
+          sale.invoice_number,
+          sale.customer_id,
+          returnReason,
+          user.userId,
+          user.userId,
+          now
+        );
+
         let totalRefundPaisa = 0;
 
         for (const returnItem of body.items) {
-          const item = db.prepare('SELECT * FROM sale_items WHERE id = ?').get(returnItem.saleItemId) as any;
+          if (
+            !returnItem
+            || typeof returnItem.saleItemId !== 'string'
+            || !Number.isSafeInteger(returnItem.quantityInUnit)
+            || returnItem.quantityInUnit <= 0
+          ) throw new Error('Each return item must have a valid sale item and positive whole quantity.');
+          const item = db.prepare('SELECT * FROM sale_items WHERE id = ? AND sale_id = ?')
+            .get(returnItem.saleItemId, sale.id) as any;
           if (!item) throw new Error(`Sale item ${returnItem.saleItemId} not found.`);
+
+          const requestedSmallestUnits = returnItem.quantityInUnit * item.conversion_factor;
+          const soldSmallestUnits = item.quantity_in_unit * item.conversion_factor;
+          const alreadyReturned = db.prepare(`
+            SELECT COALESCE(SUM(quantity_smallest_unit), 0) AS quantity
+            FROM sale_return_items WHERE sale_item_id = ?
+          `).get(item.id) as { quantity: number };
+          if (
+            !Number.isSafeInteger(requestedSmallestUnits)
+            || requestedSmallestUnits > soldSmallestUnits - alreadyReturned.quantity
+          ) throw new Error(`Return quantity exceeds the remaining quantity sold for ${item.medicine_name}.`);
 
           const unitRefund = returnItem.quantityInUnit * item.mrp_paisa_per_unit;
           totalRefundPaisa += unitRefund;
@@ -232,11 +329,15 @@ export function registerReportRoutes(app: FastifyInstance, db: Database.Database
             WHERE sale_item_id = ?
           `).all(item.id) as Array<{ batch_id: string; quantity_smallest_unit: number }>;
 
-          const smallestUnitsToRestore = returnItem.quantityInUnit * item.conversion_factor;
-          let remainingToRestore = smallestUnitsToRestore;
+          let remainingToRestore = requestedSmallestUnits;
 
           for (const alloc of allocations) {
-            const take = Math.min(remainingToRestore, alloc.quantity_smallest_unit);
+            const alreadyReturnedFromBatch = db.prepare(`
+              SELECT COALESCE(SUM(quantity_smallest_unit), 0) AS quantity
+              FROM sale_return_items WHERE sale_item_id = ? AND batch_id = ?
+            `).get(item.id, alloc.batch_id) as { quantity: number };
+            const availableToReturn = Math.max(0, alloc.quantity_smallest_unit - alreadyReturnedFromBatch.quantity);
+            const take = Math.min(remainingToRestore, availableToReturn);
             if (take <= 0) continue;
 
             db.prepare(`
@@ -249,7 +350,7 @@ export function registerReportRoutes(app: FastifyInstance, db: Database.Database
               item.id,
               alloc.batch_id,
               take,
-              Math.round((take / smallestUnitsToRestore) * unitRefund),
+              Math.round((take / requestedSmallestUnits) * unitRefund),
               body.disposition || 'RESTOCK',
               now
             );
@@ -278,25 +379,13 @@ export function registerReportRoutes(app: FastifyInstance, db: Database.Database
             remainingToRestore -= take;
             if (remainingToRestore <= 0) break;
           }
+          if (remainingToRestore > 0) {
+            throw new Error(`Return quantity exceeds the remaining batch quantity for ${item.medicine_name}.`);
+          }
         }
 
-        // Insert return record
-        db.prepare(`
-          INSERT INTO sale_returns (
-            id, return_number, sale_id, invoice_number, customer_id, reason, total_refund_paisa, payment_method, approved_by, created_by, auto_processed, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'CASH', ?, ?, 0, ?)
-        `).run(
-          returnId,
-          returnNumber,
-          sale.id,
-          sale.invoice_number,
-          sale.customer_id,
-          body.reason.trim(),
-          totalRefundPaisa,
-          user.userId,
-          user.userId,
-          now
-        );
+        db.prepare('UPDATE sale_returns SET total_refund_paisa = ? WHERE id = ?')
+          .run(totalRefundPaisa, returnId);
 
         // Record cash outflow for refund
         db.prepare(`

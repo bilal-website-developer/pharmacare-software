@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, verify } from 'node:crypto';
 import test from 'node:test';
 import { createActivationCode, hashActivationCode, signLicenseToken } from './licensingCrypto.js';
+import { ALL_LICENSE_FEATURES, ALL_LICENSE_PAGES, normalizeLicenseAccess } from './entitlementModel.js';
 
 test('activation codes are random 192-bit uppercase hex values', () => {
   const first = createActivationCode();
@@ -33,7 +34,11 @@ test('license token signs the expected claims with the configured secret', () =>
     alg: 'EdDSA',
     typ: 'JWT',
   });
-  assert.deepEqual(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')), claims);
+  assert.deepEqual(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')), {
+    ...claims,
+    enabledPages: ALL_LICENSE_PAGES,
+    enabledFeatures: ALL_LICENSE_FEATURES,
+  });
   assert.equal(verify(
     null,
     Buffer.from(`${header}.${payload}`),
@@ -47,4 +52,14 @@ test('license token signs the expected claims with the configured secret', () =>
   assert.throws(
     () => signLicenseToken(claims, 'not a private key'),
   );
+});
+
+test('legacy licenses default to all existing pages and features; invalid entitlements are rejected', () => {
+  assert.deepEqual(normalizeLicenseAccess(undefined, undefined), {
+    enabledPages: ALL_LICENSE_PAGES,
+    enabledFeatures: ALL_LICENSE_FEATURES,
+  });
+  assert.deepEqual(normalizeLicenseAccess([], []), { enabledPages: [], enabledFeatures: [] });
+  assert.equal(normalizeLicenseAccess(['not-a-page'], []), null);
+  assert.equal(normalizeLicenseAccess([], ['not-a-feature']), null);
 });

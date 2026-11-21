@@ -45,8 +45,17 @@ import { filterSalesBetween } from './utils/salesReport';
 import type { ProductFilter } from './components/InventoryScreen';
 import { AuthSession, loadAuthSession } from './utils/auth';
 import { supabase } from './utils/supabase';
-import { desktopGetSession, desktopLogout, isDesktopMode, localApiRequest } from './services/localApi';
 import {
+  desktopGetLicenseStatus,
+  desktopGetSession,
+  desktopLogout,
+  isDesktopMode,
+  localApiRequest,
+} from './services/localApi';
+import { DESKTOP_HIDDEN_PAGE_KEYS } from './services/desktopEdition';
+import {
+  ALL_LICENSE_FEATURES,
+  ALL_LICENSE_PAGES,
   canAccessPage,
   canEditSettingsSection,
   isAdminRole,
@@ -157,30 +166,49 @@ function clearDemoAccountBrowserState(): string | null {
 
 interface WorkspaceSession extends AuthSession {
   sidebarPreferences: Awaited<ReturnType<typeof loadSidebarPreferences>>;
+  enabledPages: readonly string[];
+  enabledFeatures: readonly string[];
 }
 
 async function loadWorkspaceSession(userId: string, email?: string): Promise<WorkspaceSession> {
   const profile = await loadAuthSession(userId, email);
   const visiblePageKeys = visibleSidebarPageKeys(profile.role, profile.permissions);
   const sidebarPreferences = await loadSidebarPreferences(visiblePageKeys);
-  return { ...profile, sidebarPreferences };
+  return {
+    ...profile,
+    sidebarPreferences,
+    enabledPages: ALL_LICENSE_PAGES,
+    enabledFeatures: ALL_LICENSE_FEATURES,
+  };
 }
 
 async function loadDesktopWorkspaceSession(): Promise<WorkspaceSession | null> {
-  const localSession = await desktopGetSession();
+  const [localSession, licenseStatus] = await Promise.all([
+    desktopGetSession(),
+    desktopGetLicenseStatus(),
+  ]);
   if (!localSession) return null;
   const { user } = localSession;
   if (!Object.values(UserRole).includes(user.role as UserRole)) {
     throw new Error('The local account has an unsupported role.');
   }
   const role = user.role as UserRole;
-  const visiblePageKeys = visibleSidebarPageKeys(role, user.permissions);
+  const enabledPages = licenseStatus.enabledPages || ALL_LICENSE_PAGES;
+  const enabledFeatures = licenseStatus.enabledFeatures || ALL_LICENSE_FEATURES;
+  const visiblePageKeys = visibleSidebarPageKeys(
+    role,
+    user.permissions,
+    enabledPages,
+    DESKTOP_HIDDEN_PAGE_KEYS,
+  );
   return {
     userId: user.id,
     displayName: user.fullName || user.username,
     email: user.email || '',
     role,
     permissions: user.permissions,
+    enabledPages,
+    enabledFeatures,
     shopProfile: localSession.shopProfile,
     sidebarPreferences: await loadSidebarPreferences(visiblePageKeys),
   };
@@ -314,7 +342,7 @@ export default function App() {
         const { data, error } = await supabase.auth.getUser();
         if (error) throw error;
         if (!data.user) throw new Error('Your session is no longer valid. Sign in again.');
-        const updated = await loadAuthSession(data.user.id, data.user.email);
+        const updated = await loadWorkspaceSession(data.user.id, data.user.email);
         setSession((current) => current
           ? { ...updated, sidebarPreferences: current.sidebarPreferences }
           : null);
@@ -480,7 +508,7 @@ export default function App() {
       </Suspense>
     );
   }
-  if (currentRoute.replace(/\/+$/, '') === '/demo/receipts') {
+  if (!isDesktopMode() && currentRoute.replace(/\/+$/, '') === '/demo/receipts') {
     return <DemoReceiptsPage />;
   }
 
@@ -687,7 +715,13 @@ function PharmacyApp({
   }
 
   return (
-    <PermissionsProvider role={session.role} permissions={session.permissions}>
+    <PermissionsProvider
+      role={session.role}
+      permissions={session.permissions}
+      enabledPages={session.enabledPages}
+      enabledFeatures={session.enabledFeatures}
+      disabledPages={isDesktopMode() ? DESKTOP_HIDDEN_PAGE_KEYS : undefined}
+    >
       <PharmacyWorkspace
         session={session}
         onLogout={savedDemoAccount ? () => setShowDemoHub(true) : onLogout}
@@ -726,10 +760,15 @@ function PharmacyWorkspace({
   demoAccountNotice: string;
   onShopProfileChange: (shopProfile: AuthSession['shopProfile']) => void;
 }) {
-  const { can, canPage } = usePermissions();
+  const { can, canPage, hasFeature, isPageIncluded } = usePermissions();
   const visibleSidebarKeys = React.useMemo(
-    () => visibleSidebarPageKeys(session.role, session.permissions),
-    [session.role, session.permissions],
+    () => visibleSidebarPageKeys(
+      session.role,
+      session.permissions,
+      session.enabledPages,
+      isDesktopMode() ? DESKTOP_HIDDEN_PAGE_KEYS : [],
+    ),
+    [session.role, session.permissions, session.enabledPages],
   );
   const visibleSidebarKeySet = React.useMemo(() => new Set(visibleSidebarKeys), [visibleSidebarKeys]);
   const [favoritePageKeys, setFavoritePageKeys] = useState<NavItemKey[]>(session.sidebarPreferences.favoritePageKeys);
@@ -840,15 +879,18 @@ function PharmacyWorkspace({
       const { printReceipt } = await import('./utils/printWorkflow');
       return printReceipt(type, payload, {
         role: currentRole,
-        permissions: session.permissions,
+        permissions: session.permissions.filter((permission) =>
+          (permission !== 'pos_print_sale' && permission !== 'pos_print_payment')
+          || hasFeature(permission)
+        ),
         onNotice: (text, error = false) => setPrintNotice({ text, error }),
       }, options);
     },
-    [currentRole, session.permissions],
+    [currentRole, hasFeature, session.permissions],
   );
 
   React.useEffect(() => {
-    if (!canAccessPage(currentRole, session.permissions, 'print-requests')) {
+    if (isDesktopMode() || !canAccessPage(currentRole, session.permissions, 'print-requests')) {
       setPendingPrintCount(0);
       return;
     }
@@ -1021,6 +1063,11 @@ function PharmacyWorkspace({
         return;
       }
       setIsPageNotFound(false);
+      if (!isPageIncluded(requested)) {
+        setAccessMessage('');
+        setActiveItem(requested);
+        return;
+      }
       if (!canPage(requested)) {
         setAccessMessage('No access. Your account does not have permission to open that page.');
         setActiveItem('dashboard');
@@ -1034,9 +1081,17 @@ function PharmacyWorkspace({
     const routeEvent = isDesktopMode() ? 'hashchange' : 'popstate';
     window.addEventListener(routeEvent, syncRoute);
     return () => window.removeEventListener(routeEvent, syncRoute);
-  }, [canPage]);
+  }, [canPage, isPageIncluded]);
 
   const navigateTo = React.useCallback((item: NavItemKey) => {
+    if (!isPageIncluded(item)) {
+      setAccessMessage('');
+      setIsPageNotFound(false);
+      setActiveItem(item);
+      const page = getSidebarPage(item);
+      if (page) pushAppRoute(page.route);
+      return;
+    }
     if (!canPage(item)) {
       setAccessMessage('No access. Your account does not have permission to open that page.');
       setActiveItem('dashboard');
@@ -1052,7 +1107,7 @@ function PharmacyWorkspace({
       return;
     }
     pushAppRoute(page.route);
-  }, [canPage]);
+  }, [canPage, isPageIncluded]);
 
   const [productFilter, setProductFilter] = React.useState<ProductFilter>(null);
   const [stockMedicineId, setStockMedicineId] = React.useState<string | null>(null);
@@ -1555,7 +1610,19 @@ function PharmacyWorkspace({
             : 'overflow-y-auto p-4 sm:p-6'
         }`}>
           {accessMessage && <p role="status" className="visual-toast mb-4 rounded-control border border-warning bg-warning/15 px-4 py-3 text-sm font-semibold text-text">{accessMessage}</p>}
-          {isPageNotFound ? (
+          {!isPageIncluded(activeItem) ? (
+            <section className="mx-auto flex min-h-[50vh] max-w-xl flex-col items-center justify-center gap-4 text-center">
+              <h1 className="text-2xl font-black text-text">Not included in your plan</h1>
+              <p className="text-sm text-muted">This page is not available in the current pharmacy plan.</p>
+              <button
+                type="button"
+                onClick={() => navigateTo('dashboard')}
+                className="rounded-control bg-primary px-4 py-2 text-sm font-bold text-white hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                Back to Dashboard
+              </button>
+            </section>
+          ) : isPageNotFound ? (
             <section className="mx-auto flex min-h-[50vh] max-w-xl flex-col items-center justify-center gap-4 text-center">
               <h1 className="text-2xl font-black text-text">Page not found</h1>
               <p className="text-sm text-muted">The page you requested does not exist.</p>
@@ -1712,26 +1779,31 @@ function PharmacyWorkspace({
                 <SettingsView
                   activeTemplate={billingPreferences.template}
                   canEditShopProfile={currentRole === UserRole.ADMIN
+                    && hasFeature('settings_shop_profile')
                     && (!supabase || canEditSettingsSection(currentRole, session.permissions, 'settings_shop_profile'))}
                   isShopAdmin={currentRole === UserRole.ADMIN}
                   canManageDemoData={currentRole === UserRole.ADMIN
+                    && hasFeature('settings_demo_data')
                     && (!supabase || canEditSettingsSection(currentRole, session.permissions, 'settings_demo_data'))
                     && canPage('products')
                     && canPage('suppliers')
                     && canPage('purchases')}
                   canLoadDemoData={currentRole === UserRole.ADMIN
+                    && hasFeature('settings_demo_data')
                     && (!supabase || canEditSettingsSection(currentRole, session.permissions, 'settings_demo_data'))
                     && canPage('products')
                     && canPage('suppliers')
                     && canPage('purchases')
                     && (!supabase || can('categories'))}
                   canEditOperationalSettings={(!supabase || (shopSettingsLoaded && shopSettings !== null))
+                    && hasFeature('settings_receipt_memo')
                     && (!supabase || canEditSettingsSection(currentRole, session.permissions, 'settings_receipt_memo'))}
-                  canEditOperationalLimits={Boolean(supabase)
-                    && shopSettingsLoaded
-                    && shopSettings !== null
-                    && canEditSettingsSection(currentRole, session.permissions, 'settings_operations')}
+                  canEditOperationalLimits={(isDesktopMode()
+                    || (Boolean(supabase) && shopSettingsLoaded && shopSettings !== null))
+                    && hasFeature('settings_operations')
+                    && (!supabase || canEditSettingsSection(currentRole, session.permissions, 'settings_operations'))}
                   canEditApprovalAutomation={Boolean(supabase)
+                    && hasFeature('settings_operations')
                     && currentRole === UserRole.ADMIN
                     && canEditSettingsSection(currentRole, session.permissions, 'settings_operations')}
                   operationalLimits={shopSettings ? {
@@ -1741,10 +1813,16 @@ function PharmacyWorkspace({
                   } : null}
                   onOperationalLimitsChange={updateOperationalLimits}
                   canEditReceiptQrSettings={Boolean(supabase)
+                    && hasFeature('settings_receipt_qr')
                     && canEditSettingsSection(currentRole, session.permissions, 'settings_receipt_qr')}
-                  canEditWhatsAppTemplates={!supabase
-                    || canEditSettingsSection(currentRole, session.permissions, 'settings_whatsapp_templates')}
+                  canEditWhatsAppTemplates={hasFeature('settings_whatsapp_templates')
+                    && (!supabase || canEditSettingsSection(
+                      currentRole,
+                      session.permissions,
+                      'settings_whatsapp_templates',
+                    ))}
                   canRegenerateReceiptQr={Boolean(supabase)
+                    && hasFeature('settings_receipt_qr')
                     && canEditSettingsSection(currentRole, session.permissions, 'settings_receipt_qr')
                     && canPage('sales_history')}
                   operationalSettingsError={shopSettingsError}

@@ -36,6 +36,8 @@ const allowedMethods = new Set(['GET', 'POST', 'PUT', 'DELETE']);
 app.setAppUserModelId(APP_USER_MODEL_ID);
 
 function getDataRoot(): string {
+  const testProfile = process.env.PHARMA_TEST_PROFILE;
+  if (!app.isPackaged && testProfile) return path.resolve(testProfile);
   return app.getPath('userData');
 }
 
@@ -64,6 +66,12 @@ function getRecoveryKeyPath(): string {
   return path.join(getDataRoot(), 'recovery-key.bin');
 }
 
+function getTestFilePath(name: 'PHARMA_TEST_BACKUP_PATH' | 'PHARMA_TEST_RESTORE_PATH'): string | null {
+  if (app.isPackaged) return null;
+  const filePath = process.env[name];
+  return filePath ? path.resolve(filePath) : null;
+}
+
 function storeRecoveryKey(recoveryKey: string): void {
   fs.writeFileSync(getRecoveryKeyPath(), safeStorage.encryptString(recoveryKey));
 }
@@ -75,6 +83,10 @@ function readStoredRecoveryKey(): string | null {
 }
 
 function getHardwareId(): string {
+  const testHardwareId = process.env.PHARMA_TEST_HARDWARE_ID;
+  if (!app.isPackaged && testHardwareId && /^[a-f0-9]{64}$/i.test(testHardwareId)) {
+    return testHardwareId;
+  }
   if (process.platform !== 'win32') {
     throw new Error('Pharmacy activation is supported only on Windows.');
   }
@@ -306,13 +318,15 @@ function registerIpcHandlers(): void {
       throw new Error('Only the Shop Admin can create a portable backup.');
     }
     if (typeof recoveryKey !== 'string') throw new TypeError('Enter the recovery key.');
-    const selected = await dialog.showSaveDialog(mainWindow, {
+    const testPath = getTestFilePath('PHARMA_TEST_BACKUP_PATH');
+    const selected = testPath ? null : await dialog.showSaveDialog(mainWindow, {
       title: 'Export portable encrypted backup',
       defaultPath: `PharmaCare-${new Date().toISOString().slice(0, 10)}.pharmabackup`,
       filters: [{ name: 'Pharma Care portable backup', extensions: ['pharmabackup'] }],
     });
-    if (selected.canceled || !selected.filePath) return null;
-    return createPortableBackup(backend.db, selected.filePath, recoveryKey);
+    const filePath = testPath || selected?.filePath;
+    if (!filePath || selected?.canceled) return null;
+    return createPortableBackup(backend.db, filePath, recoveryKey);
   });
 
   ipcMain.handle('pharma:portable-restore', async (event, recoveryKey: unknown) => {
@@ -321,13 +335,15 @@ function registerIpcHandlers(): void {
       throw new Error('Portable restore is available to the Shop Admin or before signing in.');
     }
     if (typeof recoveryKey !== 'string') throw new TypeError('Enter the recovery key.');
-    const selected = await dialog.showOpenDialog(mainWindow, {
+    const testPath = getTestFilePath('PHARMA_TEST_RESTORE_PATH');
+    const selected = testPath ? null : await dialog.showOpenDialog(mainWindow, {
       title: 'Choose portable Pharma Care backup',
       properties: ['openFile'],
       filters: [{ name: 'Pharma Care portable backup', extensions: ['pharmabackup'] }],
     });
-    if (selected.canceled || selected.filePaths.length === 0) return false;
-    const confirmation = await dialog.showMessageBox(mainWindow, {
+    const backupPath = testPath || selected?.filePaths[0];
+    if (!backupPath || selected?.canceled) return false;
+    const confirmation = testPath ? null : await dialog.showMessageBox(mainWindow, {
       type: 'warning',
       buttons: ['Restore backup', 'Cancel'],
       defaultId: 1,
@@ -335,7 +351,7 @@ function registerIpcHandlers(): void {
       title: 'Restore portable backup',
       message: 'Restoring replaces the current pharmacy database. The current database will be preserved as a recovery copy.',
     });
-    if (confirmation.response !== 0) return false;
+    if (confirmation && confirmation.response !== 0) return false;
 
     const dataRoot = getDataRoot();
     const databasePath = path.join(dataRoot, 'data', 'pharmadata.db');
@@ -366,7 +382,7 @@ function registerIpcHandlers(): void {
 
       restoreStarted = true;
       const recoveredDatabaseKey = await restorePortableBackup(
-        selected.filePaths[0],
+        backupPath,
         databasePath,
         recoveryKey,
       );
