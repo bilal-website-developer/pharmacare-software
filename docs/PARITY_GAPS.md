@@ -1,6 +1,6 @@
 # Desktop Data-Path Parity Gaps
 
-This is a source inventory of Supabase, browser-storage, demo, and in-memory paths reachable from the desktop renderer, updated 2026-11-22. A web-only Supabase branch is still listed when its containing screen ships in the desktop bundle. Local adapters take precedence only where explicitly noted; the desktop Supabase module resolves to `null`, so an unadapted branch is a functional gap, not an online fallback. The `npm run desktop:e2e` test validates navigation/rendering for the supported v1 pages and representative local business workflows; it is not full per-page CRUD or role-by-role acceptance.
+This is a source inventory of Supabase, browser-storage, demo, and in-memory paths reachable from the desktop renderer, updated 2026-11-22. A web-only Supabase branch is still listed when its containing screen ships in the desktop bundle. Local adapters take precedence only where explicitly noted; the desktop Supabase module resolves to `null`, so an unadapted branch is a functional gap, not an online fallback. The `npm run desktop:e2e` test validates navigation/rendering for the supported v1 pages, role-specific visibility/denial rules, entitlement enforcement, representative local workflows, and packaged installation. It is not literal add/edit/delete control coverage for every page; read-only screens and immutable/audited business records use their supported lifecycle operations.
 
 ## Supabase call sites
 
@@ -34,15 +34,16 @@ This is a source inventory of Supabase, browser-storage, demo, and in-memory pat
 
 | Screen / workflow | Local path | Status and verification |
 |---|---|---|
-| Dashboard | local dashboard/report APIs and settings | Navigation/rendering included in E2E; summary metrics are locally loaded. |
+| Dashboard | local dashboard/report APIs and settings | E2E navigation/render check; metrics are locally loaded. |
 | POS Billing | `/api/pos/*`, customer APIs, `/api/reports/returns` | E2E covers cash and split payments and direct return; hardware printing and every discount/credit edge are not covered. |
-| Products, Categories, Stock Inventory | inventory, master-data, stock APIs | E2E covers medicine create/edit and reload plus category create/edit; full UI delete/import/adjustment matrix is not covered. |
-| Suppliers, Purchases, Purchase History | `/api/suppliers`, `/api/purchases/*` | E2E creates supplier and purchase; purchase history rendering route is covered, but every UI filter/void/edit path is not. |
-| Customer Ledger, Sales History | `/api/customers`, `/api/reports/*` | E2E creates/edits a customer and validates sale/return persistence after reload and offline reopen; ledger payment lifecycle is not fully covered. |
-| Expenses / Cashbook | `/api/cashbook/*` | E2E records an expense and verifies export requests; shift-close and every filter are not covered. |
-| Business Analytics | `/api/reports/*` | E2E verifies the page renders; full metric reconciliation and every filter are not covered. |
-| Manage Users, Settings, Trash Bin | auth/users, settings, trash local APIs | E2E verifies supported pages render. Role-by-role account management, restore/purge safety matrix, and every settings control are not covered. |
-| Backups and restore | Electron backup IPC and local encrypted database | E2E creates a standard and portable backup, restores the portable file, checks reverted data, closes/reopens offline, and logs in. Cross-PC restore and device-license reissue are not verified. |
+| Products, Categories, Stock Inventory | inventory, master-data, stock APIs | E2E creates/edits products and master data, deactivates/restores a product, creates batches through purchase, and adjusts/reverses stock; after renderer reload it verifies master data, units, product, and batch records. These API operations are not page-control automation; import and exhaustive adjustment coverage remain open. |
+| Suppliers, Purchases, Purchase History | `/api/suppliers`, `/api/purchases/*` | E2E creates/edits suppliers, deactivates and purges an unused supplier through Trash, posts purchases, and voids an eligible purchase; after renderer reload it verifies supplier and purchase history. Exhaustive filters and page-control workflows are not covered. |
+| Customer Ledger, Sales History | `/api/customers`, `/api/reports/*` | E2E creates/edits a customer, records a payment, posts cash/split sales, returns a sale, and verifies customer/ledger/sales persistence after renderer reload and offline reopen. Sales/ledger history is not edited or physically deleted because it is audited business history. |
+| Expenses / Cashbook | `/api/cashbook/*` | E2E creates an expense and verifies it after renderer reload, then checks export download requests; no edit/delete route exists for posted cashbook entries. Shift-close and every filter are not covered. |
+| Business Analytics | `/api/reports/*` | E2E navigation/render check; full metric reconciliation and every filter are not covered. This is a read-only screen. |
+| Manage Users, Settings, Trash Bin | auth/users, settings, trash local APIs | E2E creates Manager/Seller/Cashier accounts, checks role-specific navigation/403s, edits and removes/restores a disposable user, updates Settings, and restores/purges trash entries; users/settings/trash persistence is checked after renderer reload. Every UI control and destructive-action combination is not covered. |
+| Backups and restore | Electron backup IPC and local encrypted database | E2E creates encrypted and portable backups, restores the portable file and checks reverted data, then closes/reopens offline. Cross-PC restore and device-license reissue are not verified. |
+| Help & Support | local help screen | E2E navigation/render check; no business-record lifecycle applies. |
 | Unsupported | Shops, Demo, WhatsApp Reminders, My Print Requests, Print Requests, return request/approval | Hidden in desktop mode. No offline service is provided for these online/platform workflows. |
 
 ## Browser and in-memory persistence still present
@@ -67,4 +68,4 @@ This is a source inventory of Supabase, browser-storage, demo, and in-memory pat
 - The shared `callSupabaseRpc` helper now fails clearly in desktop mode before touching the null client, with a regression test. This is a fail-fast safety guard, not a local adapter; the calling feature remains unsupported until its local route is implemented.
 - Treat every row marked **Not adapted**, and every localStorage/in-memory row above, as a parity/release gate. Do not claim full offline operation until a desktop route or an intentional disabled-state test covers it.
 - The icon checker is a separate build guard and validates the transparent 512px PNG, all seven requested ICO frames, both development/packaged icon paths, AppUserModelID, and electron-builder icon settings.
-- Next highest-priority work: complete per-screen CRUD and role-by-role acceptance; migrate remaining settings and transient POS/purchase state; verify filtered exports for every required table and UI file output; and qualify a packaged installer on a clean Windows machine. The return request/approval workflow stays intentionally hidden unless its full policy and authorization model is ported.
+- Next highest-priority work: migrate remaining settings and transient POS/purchase state; add page-control coverage beyond the current local-API E2E; verify filtered exports for every required table and UI file output; and qualify a packaged installer on a clean Windows machine. The return request/approval workflow stays intentionally hidden unless its full policy and authorization model is ported.

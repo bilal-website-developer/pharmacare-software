@@ -138,6 +138,7 @@ async function localRequest(
   method = 'GET',
   body?: unknown,
   includeSession = true,
+  includeStatus = false,
 ): Promise<any> {
   if (!backend) throw new Error('Local database service is not ready.');
   if (!allowedApiPath.test(requestPath) || requestPath.includes('..')) {
@@ -163,6 +164,7 @@ async function localRequest(
     body: serializedBody,
   });
   const payload = await response.json().catch(() => null);
+  if (includeStatus) return { status: response.status, body: payload };
   if (!response.ok) {
     const message = payload && typeof payload.error === 'string'
       ? payload.error
@@ -298,6 +300,17 @@ function registerIpcHandlers(): void {
     if (method !== undefined && typeof method !== 'string') throw new TypeError('Invalid local API method.');
     return localRequest(requestPath, method as string | undefined, body);
   });
+
+  if (!app.isPackaged && process.env.PHARMA_E2E_TEST === 'true') {
+    ipcMain.handle('pharma:request-status', async (event, request: unknown) => {
+      assertTrustedSender(event);
+      if (!request || typeof request !== 'object') throw new TypeError('A local API request is required.');
+      const { path: requestPath, method, body } = request as Record<string, unknown>;
+      if (typeof requestPath !== 'string') throw new TypeError('A local API path is required.');
+      if (method !== undefined && typeof method !== 'string') throw new TypeError('Invalid local API method.');
+      return localRequest(requestPath, method as string | undefined, body, true, true);
+    });
+  }
 
   ipcMain.handle('pharma:backup', async (event) => {
     assertTrustedSender(event);

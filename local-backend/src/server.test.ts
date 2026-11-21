@@ -321,13 +321,35 @@ test('Phase 1: Local Backend & SQLite Core Verification', async (t) => {
     });
 
     const overCap = await checkout(16, 134);
-    assert.equal(overCap.statusCode, 400);
+    assert.equal(overCap.statusCode, 403);
     assert.match(overCap.json().error, /discount exceeds the permission/i);
     assert.equal((db.prepare('SELECT COUNT(*) AS count FROM sales').get() as { count: number }).count, 1);
 
     const atCap = await checkout(15, 135);
     assert.equal(atCap.statusCode, 201, atCap.body);
     assert.equal(atCap.json().discountPaisa, 15);
+  });
+
+  await t.test('7b. Non-admin roles cannot read shop settings even with the module grant', async () => {
+    const manager = await createLocalUser(db, {
+      username: 'settingsmanager',
+      plainTextPassword: 'SecureManagerPassword123!',
+      role: 'manager',
+      fullName: 'Settings Manager',
+      permissions: ['settings'],
+    });
+    const token = app.jwt.sign({
+      userId: manager.id,
+      username: manager.username,
+      role: manager.role,
+      permissions: manager.permissions,
+    });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/settings/shop',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.statusCode, 403);
   });
 
   await t.test('8. Cost Redaction for Cashier role', () => {

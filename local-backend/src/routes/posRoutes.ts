@@ -396,7 +396,9 @@ export function registerPosRoutes(app: FastifyInstance, db: Database.Database): 
         }
         const allowedDiscount = Math.min(maxDiscountPaisa, Math.floor(subtotalPaisa * roleDiscountCap / 100));
         if (discountPaisa > allowedDiscount) {
-          throw new Error('The discount exceeds the permission granted to this account.');
+          const error = new Error('The discount exceeds the permission granted to this account.');
+          Object.assign(error, { statusCode: 403 });
+          throw error;
         }
         const tenderedPaisa = body.tenderedPaisa || totalPaisa;
         const paymentsTotal = body.payments.reduce((sum, payment) => sum + payment.amountPaisa, 0);
@@ -523,7 +525,7 @@ export function registerPosRoutes(app: FastifyInstance, db: Database.Database): 
       const completedSale = transaction();
       return reply.status(201).send(completedSale);
     } catch (error: any) {
-      return reply.status(400).send({ error: error.message });
+      return reply.status(error?.statusCode === 403 ? 403 : 400).send({ error: error.message });
     }
   });
 }

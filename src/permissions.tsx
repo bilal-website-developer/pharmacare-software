@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useMemo } from 'react';
 import { UserRole } from './types/pharmacy';
 import { getSidebarPage } from './components/sidebarPages';
+import { isDesktopMode } from './services/localApi';
 import {
   ALL_LICENSE_FEATURES,
   ALL_LICENSE_PAGES,
@@ -173,7 +174,13 @@ export function PermissionsProvider({
     const can = (moduleKey: ModuleKey) => canAccessModule(role, permissions, moduleKey);
     const isPageIncluded = (pageKey: string) =>
       isLicensePageIncluded(pageKey, enabledPages, disabledPages);
-    const canPage = (pageKey: string) => isPageIncluded(pageKey)
+    const isDesktopRoleRestrictedPage = (pageKey: string) => isDesktopMode()
+      && (
+        (pageKey === 'settings' && role !== UserRole.ADMIN)
+        || (pageKey === 'purchase-history' && [UserRole.SELLER, UserRole.CASHIER].includes(role))
+      );
+    const canPage = (pageKey: string) => !isDesktopRoleRestrictedPage(pageKey)
+      && isPageIncluded(pageKey)
       && canAccessPage(role, permissions, pageKey);
     const hasFeature = (featureKey: LicenseFeatureKey) => enabledFeatures.includes(featureKey);
     return { isAdmin, can, canPage, isPageIncluded, hasFeature };

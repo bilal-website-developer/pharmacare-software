@@ -28,6 +28,11 @@ export function registerSettingsRoutes(app: FastifyInstance, db: Database.Databa
   // 1. Get Shop Settings
   app.get('/api/settings/shop', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
+      await request.jwtVerify();
+      const user = request.user as { role: string };
+      if (user.role !== 'admin') {
+        return reply.status(403).send({ error: 'Only admins can view shop settings.' });
+      }
       const row = db.prepare('SELECT * FROM shop_settings WHERE id = 1').get() as any;
       if (!row) {
         return reply.send({
