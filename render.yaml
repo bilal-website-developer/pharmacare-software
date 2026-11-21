@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: pharma-care-central
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./central-backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CENTRAL_SUPABASE_URL
+        sync: false
+      - key: CENTRAL_SUPABASE_SERVICE_KEY
+        sync: false
+      - key: CENTRAL_LICENSE_PRIVATE_KEY
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false

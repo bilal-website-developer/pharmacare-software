@@ -4,6 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import crypto from 'node:crypto';
 import { createActivationCode, hashActivationCode, signLicenseToken } from './licensingCrypto.js';
 import { normalizeLicenseAccess } from './entitlementModel.js';
+import { issueReplacementActivation } from './reissueActivation.js';
 
 const app = fastify({ logger: true });
 const serviceUrl = process.env.CENTRAL_SUPABASE_URL;
@@ -204,6 +205,35 @@ app.delete('/api/licensing/activations/:id', async (request, reply) => {
   ) as Array<{ id: string }>;
   if (!deleted?.length) return reply.status(404).send({ error: 'Unused activation key was not found.' });
   return reply.send({ success: true });
+});
+
+app.post('/api/licensing/shops/:id/reissue', async (request, reply) => {
+  const { id } = request.params as { id: string };
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return reply.status(400).send({ error: 'Invalid pharmacy ID.' });
+
+  const body = request.body as { activationExpiresAt?: string };
+  const expiresAt = body?.activationExpiresAt
+    ? new Date(body.activationExpiresAt)
+    : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) {
+    return reply.status(400).send({ error: 'Activation key expiry must be a valid future date.' });
+  }
+
+  const activation = await issueReplacementActivation(id, expiresAt.toISOString(), async (replacement) => {
+    const rows = await supabaseRequest('rpc/reissue_shop_activation', {
+      method: 'POST',
+      body: JSON.stringify({
+        p_shop_id: replacement.shopId,
+        p_activation_hash: replacement.activationHash,
+        p_expires_at: replacement.expiresAt,
+      }),
+    }) as Array<{ id: string }>;
+    return rows[0]?.id || null;
+  });
+  if (!activation) {
+    return reply.status(409).send({ error: 'An active pharmacy license is required to reissue for a new PC.' });
+  }
+  return reply.status(201).send(activation);
 });
 
 app.patch('/api/licensing/shops/:id', async (request, reply) => {

@@ -48,6 +48,7 @@ function App() {
   const [activationExpiry, setActivationExpiry] = useState('');
   const [activationCode, setActivationCode] = useState('');
   const [activationId, setActivationId] = useState('');
+  const [activationMessage, setActivationMessage] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -139,6 +140,7 @@ function App() {
       });
       setActivationCode(result.activationCode);
       setActivationId(result.activationId);
+      setActivationMessage('New pharmacy activation key. Copy it now; it will not be shown again.');
       setShopName('');
       setOwnerEmail('');
       setOwnerPhone('');
@@ -158,8 +160,32 @@ function App() {
       await apiRequest(`/api/licensing/activations/${encodeURIComponent(activationId)}`, { method: 'DELETE' });
       setActivationCode('');
       setActivationId('');
+      setActivationMessage('');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not revoke activation key.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reissueLicense(shop: Shop) {
+    setBusy(true);
+    setError('');
+    setActivationCode('');
+    setActivationId('');
+    try {
+      const result = await apiRequest<{ activationCode: string; activationId: string }>(
+        `/api/licensing/shops/${encodeURIComponent(shop.id)}/reissue`,
+        { method: 'POST', body: JSON.stringify({}) },
+      );
+      setActivationCode(result.activationCode);
+      setActivationId(result.activationId);
+      setActivationMessage(
+        `Replacement activation key for ${shop.shop_name}. Existing device registrations and unused keys were revoked.`,
+      );
+      await refreshShops();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not reissue the license.');
     } finally {
       setBusy(false);
     }
@@ -228,6 +254,7 @@ function App() {
       {activationCode && (
         <section role="status" style={{ padding: 16, marginBottom: 24, background: '#eef6ff' }}>
           <strong>Copy this activation key now. It will not be shown again.</strong>
+          {activationMessage && <p>{activationMessage}</p>}
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <code style={{ overflowWrap: 'anywhere' }}>{activationCode}</code>
             <button onClick={() => void navigator.clipboard.writeText(activationCode)}>Copy</button>
@@ -243,7 +270,14 @@ function App() {
         {shops.map((shop) => {
           const license = shop.licenses?.[0];
           return (
-            <LicenseCard key={shop.id} shop={shop} license={license} busy={busy} onSave={saveLicense} />
+            <LicenseCard
+              key={shop.id}
+              shop={shop}
+              license={license}
+              busy={busy}
+              onSave={saveLicense}
+              onReissue={reissueLicense}
+            />
           );
         })}
       </div>
@@ -257,6 +291,7 @@ function LicenseCard({
   license,
   busy,
   onSave,
+  onReissue,
 }: {
   shop: Shop;
   license?: License;
@@ -268,6 +303,7 @@ function LicenseCard({
     enabledPages: LicensePageKey[],
     enabledFeatures: LicenseFeatureKey[],
   ) => Promise<void>;
+  onReissue: (shop: Shop) => Promise<void>;
 }) {
   const [status, setStatus] = useState(shop.status);
   const [expiry, setExpiry] = useState(license?.expires_at?.slice(0, 10) || '');
@@ -339,6 +375,21 @@ function LicenseCard({
         enabledPages,
         enabledFeatures,
       )}>Save license</button>
+      <div style={{ marginTop: 16 }}>
+        <button
+          type="button"
+          disabled={busy || status !== 'ACTIVE' || license?.status !== 'ACTIVE'}
+          onClick={() => {
+            const confirmed = window.confirm(
+              `Reissue this license for a new PC? Existing device registrations and unused activation keys for ${shop.shop_name} will be revoked.`,
+            );
+            if (confirmed) void onReissue(shop);
+          }}
+        >
+          Reissue licence for a new PC
+        </button>
+        <p>This creates a single-use key and revokes existing device registrations.</p>
+      </div>
     </section>
   );
 }

@@ -23,11 +23,13 @@ The Electron shell uses hash routes (for example `index.html#/products`) so file
 For local development activation, start `npm run central:dev` in one terminal and then `npm run desktop:local` in another. The first command generates an ignored local Ed25519 keypair and one-time test activation code. The optional local test installer is `npm run desktop:local:package`.
 After an activation code is consumed, stop and restart `central:dev` to create a fresh test pharmacy/code; `npm run central:dev:seed` can prepare the next state before the restart.
 
-For production-key builds, use the HTTPS central API and matching public key as build-time environment variables:
+Production deployment, Supabase setup, Render hosting, key generation, license reissue, and installer configuration are documented in [docs/PRODUCTION_SETUP.md](./docs/PRODUCTION_SETUP.md). Generate a production Ed25519 keypair on a trusted workstation with `npm run central:keys:generate`; the script stores it in the ignored `central-backend/.production-keys/` directory and never prints key contents.
+
+For production-key builds, provide the HTTPS central API and matching public key in the build environment. Use placeholders in scripts and replace them privately:
 
 ```powershell
-$env:CENTRAL_API_URL = 'https://your-central-api.example'
-$env:CENTRAL_LICENSE_PUBLIC_KEY = Get-Content -Raw 'central-license-public.pem'
+$env:CENTRAL_API_URL = 'https://<central-service-host>'
+$env:CENTRAL_LICENSE_PUBLIC_KEY = '<contents-of-license-public.pem>'
 npm run desktop:package
 ```
 
@@ -39,7 +41,7 @@ The encrypted local database and safe-storage-protected database/recovery keys a
 
 Central licensing signs entitlements with an Ed25519 private key held only by the central service (`CENTRAL_LICENSE_PRIVATE_KEY`). The desktop build embeds the matching public key from `CENTRAL_LICENSE_PUBLIC_KEY`; never provide the private key to a desktop build. The central API URL is supplied as `CENTRAL_API_URL`. A production activation requires the central service and matching key pair to be configured and deployed.
 
-`npm run desktop:package` requires compatible Visual Studio C++ Build Tools to rebuild the native SQLite addon for Electron. Packaging previously succeeded in this environment and produced an unsigned NSIS x64 installer. Code signing requires a publisher certificate and is not configured.
+`npm run desktop:package` first checks that `CENTRAL_API_URL` and `CENTRAL_LICENSE_PUBLIC_KEY` are present, then requires compatible Visual Studio C++ Build Tools to rebuild the native SQLite addon for Electron. Code signing requires a publisher certificate and is not configured.
 
 ## Desktop readiness and limitations
 

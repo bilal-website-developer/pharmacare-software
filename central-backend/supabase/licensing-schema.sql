@@ -47,6 +47,9 @@ alter table public.licenses
     'settings_demo_data', 'settings_whatsapp_templates'
   ]::text[];
 
+create unique index if not exists licenses_one_per_shop_idx
+  on public.licenses(shop_id);
+
 do $$
 begin
   if not exists (
@@ -124,9 +127,15 @@ alter table public.licenses enable row level security;
 alter table public.shop_activations enable row level security;
 alter table public.shop_checkins enable row level security;
 alter table public.developer_owners enable row level security;
+alter table public.software_versions enable row level security;
+alter table public.admin_password_resets enable row level security;
 
-revoke all on public.developer_owners from anon, authenticated;
-grant all on public.developer_owners to service_role;
+revoke all on public.shops, public.licenses, public.shop_activations,
+  public.shop_checkins, public.developer_owners, public.software_versions,
+  public.admin_password_resets from public, anon, authenticated;
+grant all on public.shops, public.licenses, public.shop_activations,
+  public.shop_checkins, public.developer_owners, public.software_versions,
+  public.admin_password_resets to service_role;
 
 create or replace function public.consume_shop_activation(
   p_activation_hash text,
@@ -154,6 +163,7 @@ begin
       where shop.id = activation.shop_id
         and shop.status in ('PENDING_ACTIVATION', 'ACTIVE')
         and license.status = 'ACTIVE'
+        and license.starts_at <= now()
         and (license.expires_at is null or license.expires_at > now())
     )
   returning activation.shop_id into claimed_shop_id;
@@ -170,5 +180,53 @@ begin
 end;
 $$;
 
+create or replace function public.reissue_shop_activation(
+  p_shop_id uuid,
+  p_activation_hash text,
+  p_expires_at timestamptz
+)
+returns table (id uuid)
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  new_activation_id uuid;
+begin
+  if p_activation_hash is null or p_activation_hash !~ '^[0-9a-f]{64}$'
+    or p_expires_at is null or p_expires_at <= now() then
+    raise exception 'A valid activation hash and future expiry are required.';
+  end if;
+
+  perform 1
+  from public.shops shop
+  join public.licenses license on license.shop_id = shop.id
+  where shop.id = p_shop_id
+    and shop.status = 'ACTIVE'
+    and license.status = 'ACTIVE'
+    and license.starts_at <= now()
+    and (license.expires_at is null or license.expires_at > now())
+  for update of shop, license;
+
+  if not found then
+    return;
+  end if;
+
+  delete from public.shop_activations
+  where shop_id = p_shop_id;
+
+  insert into public.shop_activations (
+    shop_id, activation_code_hash, expires_at
+  ) values (
+    p_shop_id, p_activation_hash, p_expires_at
+  )
+  returning shop_activations.id into new_activation_id;
+
+  return query select new_activation_id;
+end;
+$$;
+
 revoke all on function public.consume_shop_activation(text, text) from public, anon, authenticated;
+revoke all on function public.reissue_shop_activation(uuid, text, timestamptz) from public, anon, authenticated;
 grant execute on function public.consume_shop_activation(text, text) to service_role;
+grant execute on function public.reissue_shop_activation(uuid, text, timestamptz) to service_role;

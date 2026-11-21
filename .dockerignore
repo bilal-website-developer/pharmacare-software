@@ -1,0 +1,12 @@
+.git
+**/node_modules/
+**/dist/
+**/renderer/
+**/release/
+**/.env*
+**/.dev/
+**/.production-keys/
+**/*.pem
+**/*.db
+**/*.db-wal
+**/*.db-shm

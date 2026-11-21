@@ -38,7 +38,7 @@ No business logic is moved into custom native code: the expected reverse-enginee
 
 ## Known release limitations
 
-The desktop feature set is a vertical-slice foundation, not complete offline parity. A code-signing certificate, migration of remaining browser/in-memory workflows, complete table/export coverage, device-license reissue for replacement PCs, and clean-machine install/upgrade acceptance remain outstanding. See the project audit for the full acceptance gates.
+The desktop feature set is a vertical-slice foundation, not complete offline parity. A code-signing certificate, migration of remaining browser/in-memory workflows, complete table/export coverage, production acceptance of the implemented device-license reissue flow, and clean-machine install/upgrade acceptance remain outstanding. See the project audit for the full acceptance gates.
 
 ## Local licensing development and recovery
 
@@ -48,13 +48,19 @@ Portable backups use an authenticated AES-256-GCM envelope to wrap the random lo
 
 Daily backups remain scheduled automatically and are portable when a recovery key is configured; Settings exposes manual portable export/restore, and the login screen allows recovery before sign-in on a replacement PC. Restore keeps rollback copies of the database and protected keys and updates the in-process database key before restarting the local API; error rollback is implemented but packaged restore acceptance remains outstanding. The license remains device-bound and requires operator reissue after transfer. CSV/XLSX exports reuse the records filtered by the respective screens. Export coverage and local data-path parity remain incomplete and are not release acceptance.
 
+## Production central licensing deployment
+
+The canonical production Supabase setup is [`supabase/production/setup.sql`](./supabase/production/setup.sql); it limits direct table access to `service_role` and exposes atomic activation consumption and device reissue RPCs. The root Render blueprint builds the central API from its Dockerfile and requires credentials only through Render's protected environment settings. Production Ed25519 keys are generated locally into an ignored directory; the private key stays in the central host's secret store, and desktop packaging requires only the public key and HTTPS API URL.
+
+The Developer Owner dashboard's **Reissue licence for a new PC** action atomically deletes old device registrations and unused activation keys before storing a new hashed one-time code. This deliberately supports one active device at a time; a disconnected old PC can still use its cached signed entitlement until offline grace expires. The replacement key is displayed once and must be delivered privately.
+
 ## 2026-11-22 desktop entitlement and E2E continuation
 
 The existing page/feature permission keys are carried in the central signed license, persisted and verified by the local backend, and used by desktop navigation and local route authorization. Licenses predating these fields retain the backward-compatible all-enabled default. The separate return-request/review workflow and unsupported Shops, Demo, WhatsApp Reminders, and Print Requests are hidden in desktop mode; direct medicine returns within POS use the local API.
 
 The Playwright Electron test uses a freshly generated temporary Ed25519 keypair, temporary profile/database, and test-only development file selection for portable backup/restore. It does not read or modify `central-backend/.dev/`, `.env`, or the user's real Electron profile. Keep test file-path overrides disabled for packaged builds. Purchases and returns must create their parent transaction rows before dependent items inside the same SQLite transaction; the E2E regression covers both operations.
 
-The Electron E2E now covers activation/admin setup, every supported v1 sidebar page, Manager/Seller/Cashier navigation and API-denial rules, representative catalog/supplier/customer/staff lifecycle actions, purchase and void, cash and split sales, POS return, expenses, export download requests, encrypted/portable backup and restore, signed Settings entitlement check-in and offline enforcement, and offline reopen. It also silently installs the generated NSIS package into a temporary directory, activates it, creates an admin, posts a sale, uninstalls it, and verifies that the isolated user database is retained. The test drives many mutations through the local API bridge rather than the page controls; read-only and immutable-transaction screens do not have literal add/edit/delete lifecycles. Printer hardware, production central licensing, clean-machine qualification, and replacement-device license reissue remain unverified.
+The Electron E2E now covers activation/admin setup, every supported v1 sidebar page, Manager/Seller/Cashier navigation and API-denial rules, representative catalog/supplier/customer/staff lifecycle actions, purchase and void, cash and split sales, POS return, expenses, export download requests, encrypted/portable backup and restore, signed Settings entitlement check-in and offline enforcement, and offline reopen. It also silently installs the generated NSIS package into a temporary directory, activates it, creates an admin, posts a sale, uninstalls it, and verifies that the isolated user database is retained. The test drives many mutations through the local API bridge rather than the page controls; read-only and immutable-transaction screens do not have literal add/edit/delete lifecycles. Printer hardware, production central licensing and reissue acceptance, and clean-machine qualification remain unverified.
 
 ## 2026-11-21 desktop continuation
 

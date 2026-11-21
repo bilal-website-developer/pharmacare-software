@@ -1,94 +1,108 @@
-# Central Licensing Production Setup
+# Production setup: central licensing
 
-This configures only the central licensing service. Pharmacy transactions remain in the local encrypted database; Supabase stores shop/license administration metadata only.
+This guide deploys the licensing service and Developer Owner dashboard. Pharmacy sales, customers, inventory, and purchases stay in each desktop installation's encrypted local database; Supabase stores only central shop and license administration records.
 
-## 1. Create Supabase project and schema
+Do not paste real credentials into source files, commits, chat, or this guide. Replace angle-bracket placeholders privately in the provider's secret settings. This project has not been connected to or deployed against a production Supabase project.
 
-1. Create a Supabase project for the central service and configure its Auth provider for Developer Owner accounts.
-2. In the Supabase SQL editor, run the checked-in [`licensing-schema.sql`](../central-backend/supabase/licensing-schema.sql).
-3. Create and verify a Developer Owner through Supabase Auth. Add that user's UUID to `public.developer_owners` as an active Owner. The central API denies privileged shop-management routes to all other users.
-4. Keep pharmacy transaction, customer, inventory, and purchase data out of this project.
+## What you need
 
-The central API uses the Supabase REST/Auth endpoints with its service-role credential. Restrict that credential to the central service's secret store; never put it in a desktop build.
+- A Supabase project dedicated to licensing metadata.
+- A Supabase Auth account for each Developer Owner.
+- A Render account for the central API. Use a paid, non-sleeping plan for production use.
+- A trusted workstation for signing-key generation.
+- A secure way to transfer the private signing key to Render and the public key to the desktop release build.
 
-## 2. Generate an Ed25519 signing keypair
+## 1. Create the Supabase project
 
-Generate the pair on a trusted administration workstation. Store the private PEM in the central host's secret manager and the public PEM in the desktop release build configuration. Do not commit either key.
+1. Create a new Supabase project for central licensing. Do not use a pharmacy's business-data project.
+2. In **SQL Editor**, open and run [`supabase/production/setup.sql`](../supabase/production/setup.sql). It creates the licensing tables, row-level security, service-role grants, activation/reissue functions, and entitlement constraints. Re-running the setup is supported. If an existing project reports duplicate licenses for a shop, resolve those records before adding the one-license-per-shop index.
+3. In **Authentication → Users**, create the first Developer Owner account. Confirm that the account can sign in.
+4. Copy that account's user UUID from the Supabase dashboard. In SQL Editor, replace the placeholder below with that UUID, then run:
 
-```js
-// Run as a one-off Node.js script on a trusted workstation.
-import { generateKeyPairSync } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+   ```sql
+   insert into public.developer_owners (user_id, is_active)
+   values ('<AUTH_USER_UUID>', true)
+   on conflict (user_id) do update set is_active = true;
+   ```
 
-const { privateKey, publicKey } = generateKeyPairSync('ed25519', {
-  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-  publicKeyEncoding: { type: 'spki', format: 'pem' },
-});
-writeFileSync('central-license-private.pem', privateKey, { flag: 'wx', mode: 0o600 });
-writeFileSync('central-license-public.pem', publicKey, { flag: 'wx' });
-```
+5. In **Project Settings → API**, note the project URL and the service-role key. Keep the service-role key private; it is only for the central service.
 
-After transferring the private key into the central host's secret manager, securely remove the temporary private-key file according to the workstation's data-handling policy. Never provide the private key to Electron, Vite, or a customer PC.
+The SQL enables RLS and grants table/function access to `service_role`; it does not grant browser users direct access to license tables. The Developer Owner dashboard authenticates with Supabase Auth, while privileged changes go through the central API's owner allowlist check.
 
-## 3. Deploy the central API
+## 2. Generate production signing keys
 
-Deploy `central-backend` as a Node.js web service with outbound HTTPS access to the Supabase project. Build and run the compiled server:
-
-```powershell
-npm ci
-npm run build --workspace=central-backend
-node central-backend/dist/server.js
-```
-
-Configure these names in the hosting provider's secret/environment settings (do not place secret values in source or renderer configuration):
-
-- `CENTRAL_SUPABASE_URL`
-- `CENTRAL_SUPABASE_SERVICE_KEY`
-- `CENTRAL_LICENSE_PRIVATE_KEY`
-- `CORS_ORIGIN` (only the trusted Developer Owner dashboard origin)
-- `PORT` (when required by the provider)
-
-The health endpoint is `GET /api/health`. Put the service behind HTTPS and use its HTTPS URL as the desktop build's `CENTRAL_API_URL`.
-
-For testing and demonstrations, a Supabase free plan plus a free Node web-service tier can reduce cost. Free tiers may sleep, impose request/compute limits, or change terms; they are not an availability or data-retention guarantee and are not recommended for a production pharmacy licensing dependency. Verify the provider's current limitations before deployment and use a supported paid plan for production operations.
-
-## 4. Build the desktop release
-
-Use the matching public PEM and HTTPS API URL only as build-time public configuration:
+On a trusted workstation in the repository root, run:
 
 ```powershell
-$env:CENTRAL_API_URL = 'https://licensing.example.invalid'
-$env:CENTRAL_LICENSE_PUBLIC_KEY = Get-Content -Raw 'central-license-public.pem'
+npm run central:keys:generate
+```
+
+The script creates an Ed25519 pair under the ignored `central-backend/.production-keys/` directory. It refuses to overwrite an existing pair, restricts the directory to the current Windows user (and uses private directory/file modes on POSIX), and prints only file paths, never key contents. Back up the private key in an approved secrets vault. Do not commit it, upload it to the desktop, or put it in a renderer/dashboard build setting. The public key is safe to distribute with desktop builds.
+
+The generator is intentionally not run as part of this setup work; no production signing keys are created here.
+
+## 3. Deploy the central API on Render
+
+1. In Render, choose **New → Blueprint** and connect this repository. Render reads the root [`render.yaml`](../render.yaml), which builds [`central-backend/Dockerfile`](../central-backend/Dockerfile).
+2. When prompted, add these environment variables in Render's protected service settings:
+
+   | Name | Value to provide privately |
+   |---|---|
+   | `CENTRAL_SUPABASE_URL` | `<SUPABASE_PROJECT_URL>` |
+   | `CENTRAL_SUPABASE_SERVICE_KEY` | `<SUPABASE_SERVICE_ROLE_KEY>` |
+   | `CENTRAL_LICENSE_PRIVATE_KEY` | `<CONTENTS_OF_LICENSE_PRIVATE_PEM>` |
+   | `CORS_ORIGIN` | `<DEVELOPER_DASHBOARD_HTTPS_ORIGIN>` |
+
+   Do not add the signing private key or service-role key to Git, Render's public build arguments, or desktop build settings. `PORT` is supplied by Render. Keep CORS limited to the exact dashboard origin.
+3. Create the service and wait for its health check to pass. Its health endpoint is `GET /api/health`.
+4. Copy the HTTPS service URL from Render. It is the desktop build's `CENTRAL_API_URL`.
+
+The Render blueprint uses a paid starter plan and automatic deploy is disabled so production releases can be reviewed. For a no-cost evaluation, change `plan: starter` to `plan: free` in `render.yaml` before creating the Blueprint, if Render's free Docker web service is available for your account/region. Free instances can sleep and cold-start, so use them only for testing; restore the paid non-sleeping plan before production. Review current plan/pricing and health-check behavior before rollout.
+
+## 4. Deploy the Developer Owner dashboard
+
+Deploy `developer-dashboard` as a static Vite site using your approved static host. Set these **build-time** variables in that host's protected project settings:
+
+| Name | Value to provide |
+|---|---|
+| `VITE_CENTRAL_API_URL` | `<CENTRAL_HTTPS_SERVICE_URL>` |
+| `VITE_SUPABASE_URL` | `<SUPABASE_PROJECT_URL>` |
+| `VITE_SUPABASE_ANON_KEY` | `<SUPABASE_PUBLIC_ANON_KEY>` |
+
+Only the public anon key belongs in the dashboard. Never use the service-role key there. Rebuild and deploy the dashboard after changing these values.
+
+## 5. Build the production desktop installer
+
+In PowerShell, provide the HTTPS central URL and matching public PEM as placeholders in your private build environment, then build:
+
+```powershell
+$env:CENTRAL_API_URL = 'https://<CENTRAL_SERVICE_HOST>'
+$env:CENTRAL_LICENSE_PUBLIC_KEY = '<CONTENTS_OF_LICENSE_PUBLIC_PEM>'
 npm run desktop:package
 ```
 
-The Electron bundle embeds only `CENTRAL_API_URL` and `CENTRAL_LICENSE_PUBLIC_KEY`. Do not define `CENTRAL_LICENSE_PRIVATE_KEY` or `CENTRAL_SUPABASE_SERVICE_KEY` in the desktop build environment. Protect release signing credentials separately; the current installer configuration is unsigned unless a publisher certificate is configured.
+The package preflight stops immediately with a clear error if either variable is missing. It does not read `.env` files or print the configured values. `CENTRAL_LICENSE_PRIVATE_KEY` and `CENTRAL_SUPABASE_SERVICE_KEY` must never be set for a desktop build.
 
-## 5. Create and activate a pharmacy
+The installer is written to `desktop-app/release/PharmaCare-<VERSION>-Setup.exe`. The Windows installer is unsigned unless a publisher certificate is configured. Sign and verify releases before distribution.
 
-1. Sign in to the Developer Owner dashboard with a user present in `developer_owners`.
-2. Create the pharmacy and issue a one-time activation code. Deliver the code through a private channel; it expires according to the activation-expiry setting.
-3. Activate the pharmacy in the desktop application. The central API binds that redemption to the device fingerprint and returns an Ed25519-signed entitlement.
-4. The desktop stores and verifies the signed entitlement locally. Check-ins require the same registered device; expiry, suspension/revocation, device binding, clock rollback, and offline grace are enforced locally.
-5. Test activation, check-in, suspension, expiry, restore, and loss-of-network behavior with a non-production shop before issuing production licenses.
+## 6. Issue, activate, and reissue licenses
 
-## Local development activation
+1. Sign in to the dashboard with a user listed as active in `public.developer_owners`.
+2. Create a pharmacy and deliver its single-use activation key privately. The key is shown once and expires after its configured period.
+3. Activate the desktop app. The central API binds the signed license to that PC; the desktop checks signature, expiry, status, device binding, and offline grace locally.
+4. To move a license, select **Reissue licence for a new PC** on that pharmacy. Confirm the warning, then copy the new one-time key privately. The database function atomically removes prior device registrations and unused activation keys before creating the replacement key. Only an active license can be reissued.
+5. Activate the replacement PC with the new key. A disconnected old PC may continue under its already-signed offline entitlement until its grace period expires; reissue is not an instant remote wipe.
 
-No Supabase project or deployment is needed for local development:
+## 7. Pre-release checklist
 
-```powershell
-# Terminal 1: creates ignored dev signing keys and a test shop/code, then serves loopback only.
-npm run central:dev
+- Verify `/api/health` over HTTPS.
+- Confirm the Developer Owner can sign in and a non-owner cannot manage licenses.
+- Test new activation, one-time key replay rejection, check-in, entitlement changes, suspension, expiry, and offline grace with a non-production pharmacy.
+- Test license reissue and confirm the old PC cannot check in while the new PC can activate.
+- Test backup recovery separately. A restored database retains its device-bound license and may require another authorized reissue.
+- Review CORS, Supabase RLS, Render secret settings, backups, logs, and incident/key-rotation procedures.
+- Qualify the complete desktop workflow, installer signature, upgrade/uninstall behavior, and printer hardware before serving a real pharmacy.
 
-# Terminal 2: builds/starts the desktop renderer with the dev public key and local service URL.
-npm run desktop:local
+## Local development (not production)
 
-# Optional test installer; it is a local-development build, not a production release.
-npm run desktop:local:package
-```
-
-`npm run central:dev` prints a one-time test activation code and stores its hash/state and Ed25519 keypair under the ignored `central-backend/.dev/` directory. The private key is never embedded in the desktop build. After a code is consumed, stop and restart the service to load a fresh pharmacy/code; `npm run central:dev:seed` can prepare that state before restarting. The service binds to `127.0.0.1`; do not expose it to a network.
-
-## Recovery-key backups
-
-The Shop Admin receives a recovery key during first-admin setup. Portable backup exports are authenticated-encrypted and wrap the local database key with that recovery key. Restore is available from Settings and from the login screen before sign-in; it verifies the backup and recovery-key verifier before replacing the local database. A restored database contains the original device-bound license; transferring to a replacement PC also requires an authorized new-device activation/reissue from the central licensing operator.
+For isolated local tests without a deployment, use `npm run central:dev` and `npm run desktop:local`. Local keys/state are stored under the ignored `central-backend/.dev/` directory. Do not expose that loopback-only service to the internet or use its development keypair for production.

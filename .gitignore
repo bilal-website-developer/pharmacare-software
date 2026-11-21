@@ -11,6 +11,7 @@ supabase/.temp/
 release/
 desktop-app/renderer/
 central-backend/.dev/
+central-backend/.production-keys/
 *.db
 *.db-wal
 *.db-shm
