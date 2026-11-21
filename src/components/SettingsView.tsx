@@ -39,6 +39,13 @@ import {
 import type { ShopProfileUpdate } from '../data/shopProfile';
 import { shopLogoFileError } from '../utils/shopLogo';
 import {
+  desktopCreatePortableBackup,
+  desktopCreateRecoveryKey,
+  desktopGetRecoveryKeyStatus,
+  desktopRestorePortableBackup,
+  isDesktopMode,
+} from '../services/localApi';
+import {
   getReceiptQrSettings,
   normalizeReceiptBaseUrl,
   regenerateReceiptQrForInvoice,
@@ -181,6 +188,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [demoBusy, setDemoBusy] = useState(false);
   const [demoNotice, setDemoNotice] = useState<{ text: string; error?: boolean } | null>(null);
   const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false);
+  const [backupRecoveryKey, setBackupRecoveryKey] = useState('');
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupNotice, setBackupNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const [recoveryKeyConfigured, setRecoveryKeyConfigured] = useState(false);
+  const [recoveryKeySetupBusy, setRecoveryKeySetupBusy] = useState(false);
+  const [recoveryKeyVisible, setRecoveryKeyVisible] = useState(false);
+  const desktopMode = isDesktopMode();
+
+  useEffect(() => {
+    if (!desktopMode || !isShopAdmin) return;
+    let active = true;
+    void desktopGetRecoveryKeyStatus()
+      .then(({ configured }) => {
+        if (active) setRecoveryKeyConfigured(configured);
+      })
+      .catch((error: unknown) => {
+        if (active) setBackupNotice({
+          text: error instanceof Error ? error.message : 'Could not load recovery-key status.',
+          error: true,
+        });
+      });
+    return () => { active = false; };
+  }, [desktopMode, isShopAdmin]);
 
   useEffect(() => {
     setMemoSettings(savedMemoSettings);
@@ -383,6 +413,60 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setLogoUrl('');
     setLogoFile(null);
     setMemoSettings((current) => ({ ...current, logoUrl: '' }));
+  };
+
+  const handleCreateRecoveryKey = async () => {
+    setRecoveryKeySetupBusy(true);
+    setBackupNotice(null);
+    try {
+      const key = await desktopCreateRecoveryKey();
+      setBackupRecoveryKey(key);
+      setRecoveryKeyConfigured(true);
+      setRecoveryKeyVisible(true);
+      setBackupNotice({
+        text: 'Recovery key created. Save it somewhere safe; it will not be shown again.',
+        error: false,
+      });
+    } catch (error) {
+      setBackupNotice({
+        text: error instanceof Error ? error.message : 'Could not create a recovery key.',
+        error: true,
+      });
+    } finally {
+      setRecoveryKeySetupBusy(false);
+    }
+  };
+
+  const handlePortableBackup = async () => {
+    setBackupBusy(true);
+    setBackupNotice(null);
+    try {
+      const savedPath = await desktopCreatePortableBackup(backupRecoveryKey.trim());
+      if (savedPath) setBackupNotice({ text: `Portable backup saved: ${savedPath}`, error: false });
+    } catch (error) {
+      setBackupNotice({
+        text: error instanceof Error ? error.message : 'Could not create the portable backup.',
+        error: true,
+      });
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handlePortableRestore = async () => {
+    setBackupBusy(true);
+    setBackupNotice(null);
+    try {
+      const restored = await desktopRestorePortableBackup(backupRecoveryKey.trim());
+      if (restored) setBackupNotice({ text: 'Backup restored. Sign in again to continue.', error: false });
+    } catch (error) {
+      setBackupNotice({
+        text: error instanceof Error ? error.message : 'Could not restore the portable backup.',
+        error: true,
+      });
+    } finally {
+      setBackupBusy(false);
+    }
   };
   const displayedLogoUrl = logoPreviewUrl || logoUrl;
 
@@ -622,6 +706,88 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   return (
     <form onSubmit={handleSave} className="space-y-6 max-w-4xl mx-auto pb-8">
+      {desktopMode && isShopAdmin && (
+        <section className="space-y-4 rounded-card border border-border bg-white p-5 shadow-xs sm:p-6">
+          <div>
+            <h2 className="flex items-center gap-2 text-base font-black text-text">
+              <Database size={16} className="text-primary" /> Encrypted Backups
+            </h2>
+            <p className="mt-1 text-xs text-muted">
+              Daily local backups run automatically. Portable backups can be restored on another PC with the recovery key.
+            </p>
+          </div>
+          {!recoveryKeyConfigured && (
+            <button
+              type="button"
+              onClick={() => void handleCreateRecoveryKey()}
+              disabled={recoveryKeySetupBusy}
+              className="rounded-control bg-primary px-3 py-2 text-xs font-bold text-white disabled:opacity-60"
+            >
+              {recoveryKeySetupBusy ? 'Creating recovery key…' : 'Create recovery key'}
+            </button>
+          )}
+          {recoveryKeyConfigured && (
+            <div className="space-y-3">
+              <label className="block text-xs font-semibold text-text" htmlFor="portable-recovery-key">
+                Recovery key
+              </label>
+              <input
+                id="portable-recovery-key"
+                type={recoveryKeyVisible ? 'text' : 'password'}
+                autoComplete="off"
+                value={backupRecoveryKey}
+                onChange={(event) => setBackupRecoveryKey(event.target.value)}
+                placeholder="Enter your saved recovery key"
+                className="w-full rounded-control border border-border bg-surface px-3 py-2 font-mono text-sm"
+              />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRecoveryKeyVisible((visible) => !visible)}
+                  className="rounded-control border border-border px-2 py-1 text-[11px] font-semibold text-text"
+                >
+                  {recoveryKeyVisible ? 'Hide key' : 'Show key'}
+                </button>
+                <button
+                  type="button"
+                  disabled={!backupRecoveryKey}
+                  onClick={() => {
+                    void navigator.clipboard.writeText(backupRecoveryKey)
+                      .then(() => setBackupNotice({ text: 'Recovery key copied.', error: false }))
+                      .catch(() => setBackupNotice({ text: 'Copy was unavailable; select and copy the key above.', error: true }));
+                  }}
+                  className="rounded-control border border-border px-2 py-1 text-[11px] font-semibold text-text disabled:opacity-50"
+                >
+                  Copy key
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={backupBusy || !backupRecoveryKey.trim()}
+                  onClick={() => void handlePortableBackup()}
+                  className="rounded-control bg-primary px-3 py-2 text-xs font-bold text-white disabled:opacity-60"
+                >
+                  {backupBusy ? 'Working…' : 'Export portable backup'}
+                </button>
+                <button
+                  type="button"
+                  disabled={backupBusy || !backupRecoveryKey.trim()}
+                  onClick={() => void handlePortableRestore()}
+                  className="rounded-control border border-border px-3 py-2 text-xs font-bold text-text disabled:opacity-60"
+                >
+                  Restore portable backup
+                </button>
+              </div>
+            </div>
+          )}
+          {backupNotice && (
+            <p role={backupNotice.error ? 'alert' : 'status'} className={`text-xs ${backupNotice.error ? 'text-danger' : 'text-success'}`}>
+              {backupNotice.text}
+            </p>
+          )}
+        </section>
+      )}
       {operationalSettingsError && (
         <p role="alert" className="rounded-control border border-warning bg-warning/15 px-3 py-2 text-sm font-semibold text-text">
           {operationalSettingsError}

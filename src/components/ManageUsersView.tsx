@@ -11,6 +11,7 @@ import {
   setSettingsSectionPermission,
 } from '../permissions';
 import { supabase } from '../utils/supabase';
+import { TableExportButtons } from './TableExportButtons';
 
 interface ShopOption {
   id: string;
@@ -433,7 +434,20 @@ export function ManageUsersView({
               : 'Manage platform Admin accounts and shop access.'}
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <TableExportButtons
+            filename="staff-users"
+            sheetName="Users"
+            headers={['Username', 'Full Name', 'Email', 'Role', 'Active', 'Permissions']}
+            rows={visibleUsers.map((user) => [
+              user.username,
+              user.full_name,
+              user.email,
+              user.role,
+              user.is_active,
+              user.permissions?.join('; '),
+            ])}
+          />
           {!isFormOpen && (
             <button type="button" disabled={!serviceReady} onClick={startAdd} className="inline-flex items-center gap-2 rounded-control bg-blue-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
               <Plus size={17} /> Add User

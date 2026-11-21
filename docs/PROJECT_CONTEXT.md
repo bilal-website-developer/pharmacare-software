@@ -245,10 +245,11 @@ The future per-shop barcode cutover must backfill one registry across both `medi
 - Keep factual claims grounded in current code/docs; write **unknown** where verification is missing.
 
 <!-- AUTO:START -->
-Generated at (UTC): 2026-11-21T13:26:33.871Z
+Generated at (UTC): 2026-11-21T14:13:26.101Z
 Git branch: master
 
 Last 5 commit subjects:
+- Harden desktop licensing and packaging
 - Before final agent run
 
 npm scripts:
@@ -264,7 +265,7 @@ npm scripts:
 - - `lint`: `tsc --noEmit`
 - - `test:discount`: `tsx --test src/utils/discount.test.ts`
 - - `test:backends`: `npm test --workspace=local-backend && npm test --workspace=central-backend`
-- - `test`: `npm run test:fefo && npm run test:receipt && npm run test:receipt-qr && npm run test:demo-receipt && npm run test:inventory-ui && npm run test:stock-inventory && npm run test:inventory-products && npm run test:stock-alerts && npm run test:pos-catalog && npm run test:product-filters && npm run test:master-data && npm run test:print-snapshot && npm run test:print-request-editor && npm run test:trash-bin && npm run test:store-settings && npm run test:shop-settings && npm run test:shop-logo && npm run test:demo-data && npm run test:demo-preview && npm run test:install-prompt && npm run test:pos-customer && npm run test:held-bills && npm run test:payment-details && npm run test:sales-profit && npm run test:approval-automation && npm run test:invoice-input && npm run test:report && npm run test:discount && npm run test:barcode-scanner && npm run test:labels && npm run test:permissions && npm run test:sidebar && npm run test:manage-users-policy && npm run test:customer-display && npm run test:backends`
+- - `test`: `npm run test:fefo && npm run test:receipt && npm run test:table-export && npm run test:receipt-qr && npm run test:demo-receipt && npm run test:inventory-ui && npm run test:stock-inventory && npm run test:inventory-products && npm run test:stock-alerts && npm run test:pos-catalog && npm run test:product-filters && npm run test:master-data && npm run test:print-snapshot && npm run test:print-request-editor && npm run test:trash-bin && npm run test:store-settings && npm run test:shop-settings && npm run test:shop-logo && npm run test:demo-data && npm run test:demo-preview && npm run test:install-prompt && npm run test:pos-customer && npm run test:held-bills && npm run test:payment-details && npm run test:sales-profit && npm run test:approval-automation && npm run test:invoice-input && npm run test:report && npm run test:discount && npm run test:barcode-scanner && npm run test:labels && npm run test:permissions && npm run test:sidebar && npm run test:manage-users-policy && npm run test:customer-display && npm run test:backends`
 
 Dependencies and versions: see `package.json`.
 
@@ -283,7 +284,7 @@ src/
   src/utils/
 ```
 
-Test files: 45
+Test files: 49
 
 Environment variable names from .env.example files (values are not read into this block):
 - APP_URL
@@ -308,20 +309,23 @@ Environment variable names from .env.example files (values are not read into thi
 - This copy is now a fresh local Git repository on `master` with no remotes; its previous Git history was removed as requested. The source copy and GitHub repository were not contacted.
 - Removed `.vercel/` and `vercel.json`; `.github/copilot-instructions.md` was retained because it is not a deployment workflow. No `.github/workflows/`, Netlify, or Firebase deployment artifacts were present.
 - Root and Electron package names are `pharmacare-desktop`; package-lock root metadata matches. Root `repository`, `homepage`, and `bugs` fields were absent. `.env`, `.env.*`, and actual `.env` values were left untouched; ignore rules cover local environment files.
-- Desktop renderer build now writes to `desktop-app/renderer/` without loading `.env` files; the root web build continues to use the existing Vite paths. Commands: `npm run desktop:renderer`, `npm run build --workspace=desktop-app`, and `npm run desktop:package`.
+- Desktop renderer build now writes to `desktop-app/renderer/` without loading `.env` files; the root web build continues to use the existing Vite paths. Commands: `npm run desktop:renderer`, `npm run build --workspace=desktop-app`, `npm run desktop:package`, `npm run central:dev`, `npm run desktop:local`, and `npm run desktop:local:package`.
 - The React desktop login/session, local activation/admin setup, POS/catalog, customer and sales-history adapters, shop operational settings, and encrypted backup/restore foundations exist. The local backend uses `better-sqlite3-multiple-ciphers` (not SQLCipher mode), Argon2id, loopback JWT/API-token checks, FEFO checkout, role checks, cost redaction, and migrations. Seller discount enforcement uses the cashier cap. Run backend checks with `npm test --workspace=local-backend` and `npm run build --workspace=local-backend`.
-- The central API checks Supabase identity against a `developer_owners` allowlist and consumes one-time activation keys atomically. License tokens now use Ed25519; the private key stays central, while the desktop build embeds only the public key. Local verification covers signature, expiry, device binding, suspension/revocation, clock rollback, and grace period. No key pair or central deployment was configured, so activation/check-in were not end-to-end tested.
+- The production central API checks Supabase identity against a `developer_owners` allowlist and consumes one-time activation keys atomically. A separate local-only service now creates a test pharmacy, one-time key, and ignored Ed25519 keypair; local activation/check-in and replay rejection were API-smoke-tested. Production deployment and real activation remain unverified.
 - The desktop Vite build aliases the Supabase client module to a null shim. This removes the Supabase SDK/client from the desktop bundle, but existing pages with browser-local/demo behavior and missing local API adapters are not made offline-complete by the alias.
-- Validation in this continuation: root `npm run lint` and `npm test` passed; local backend tests (11) and central signing tests (3) passed; central/local/desktop workspace TypeScript builds passed. `npm run desktop:package` produced an unsigned NSIS x64 installer. A packaged launch smoke test confirmed the local backend and license-status IPC start and create a database/key profile in an isolated user-data directory.
+- Validation: `npm run lint`, `npm test`, the root production build, local/central/desktop/dashboard workspace builds, and `npm run desktop:local:package` pass. The local-development build produced an unsigned NSIS x64 installer. Local activation/check-in/replay behavior was API-smoke-tested; packaged UI workflows remain untested.
 - Two packaged-runtime defects were fixed during the launch test: the bundled backend no longer runs its standalone entrypoint, and IPC permits only the packaged main frame while allowing the renderer's `file:` SPA history routes.
-- Remaining limitations: inventory, purchases, suppliers, returns, complete reports, user management, and filtered exports do not have verified local parity. Existing backups require the current machine's protected DB key; portable recovery-key backup/restore is not implemented. Full activation, role/workflow, upgrade, printing, and offline reopen tests were not run. Installer is unsigned. The default non-breaking `npm audit fix` removed compatible findings; 8 advisories remain in the Electron/Electron Builder chain (6 moderate, 2 high) because available remediation requires major-version changes and Electron/native ABI requalification. No `.env` values were read or changed.
+- Current continuation adds portable encrypted backup/restore with a Shop Admin recovery key and first-setup display, daily portable backups once a key exists, Settings and pre-login restore, error rollback of the database/key files, and filtered CSV/XLSX controls on several lists/reports. Restore updates the in-process database key before restarting the local API. Recovery has backend integrity/wrong-key tests; restored entitlements remain device-bound and need operator reissue on a replacement PC. Product/stock, purchase, supplier, customer, staff, cashbook, sales report, and pending-return screens have CSV/XLSX export controls, but full table coverage is not verified.
+- Remaining limitations: full offline parity is still incomplete; multiple desktop-renderer components retain Supabase, browser-local, demo, or in-memory data paths. The packaged installer was rebuilt in local-development mode, but the UI activation/admin/roles and purchase/sale/return/backup/restore/export/offline-reopen workflow was not completed. User credential creation was not performed. Production central activation, replacement-device license reissue, printer acceptance, clean-install/upgrade tests, and code signing remain outstanding. Prior audit had 8 compatible-with-current-major-version findings remaining in the Electron/Electron Builder chain; no `--force` changes were made. No `.env` values were read or changed.
 
 ### Changelog
 
 - 2026-11-21: Produced the x64 NSIS installer; removed the Supabase client from the desktop bundle; implemented Ed25519 license signing/verification, expiry/device/status/grace checks and periodic check-in; fixed packaged backend startup and main-frame IPC URL handling. Added tests for local license failure cases. Activation remains unverified without the central deployment and matching build key.
+- 2026-11-21: Added loopback development licensing, local Ed25519 test-key provisioning, one-time activation/check-in tests, portable recovery-key backup/restore and first-admin key display, plus filtered CSV/XLSX controls. Root tests/builds passed and a local-development NSIS installer was produced. Full renderer parity and packaged workflow acceptance remain open.
+- 2026-11-21: Added portable restore before sign-in, rollback of database/protected keys on restore errors, and synchronization of the recovered database key before the backend restarts. README, production setup, decisions, and the desktop audit now document the tested commands and remaining acceptance gaps.
 
 ### Decisions and known issues
 
 - Implementation tradeoffs and security limitations are documented in [DECISIONS.md](../DECISIONS.md); this is a foundation, not a production-ready offline release.
 - The installer builds and the packaged executable launches in an isolated profile, but activation requires the central service's `CENTRAL_LICENSE_PRIVATE_KEY`, a matching build-time `CENTRAL_LICENSE_PUBLIC_KEY`, `CENTRAL_API_URL`, and deployed [licensing-schema.sql](../central-backend/supabase/licensing-schema.sql).
-- Do not use production pharmacy data until remaining workflow parity, portable encrypted-backup recovery, end-to-end licensing, and clean-machine release acceptance are completed.
+- Do not use production pharmacy data until remaining workflow parity, production licensing, replacement-device reissue, and clean-machine release acceptance are completed.

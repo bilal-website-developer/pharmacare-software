@@ -2,6 +2,7 @@ import React, { FormEvent, useCallback, useEffect, useState } from 'react';
 import { BookOpen, ChevronDown, ChevronUp, Plus, RefreshCw, Save, Truck, X } from 'lucide-react';
 import { supabase } from '../utils/supabase';
 import { DEMO_DATA_CHANGED_EVENT } from '../data/demoDataManager';
+import { TableExportButtons } from './TableExportButtons';
 
 interface Supplier {
   id: string;
@@ -427,7 +428,21 @@ export const SuppliersView: React.FC = () => {
           </h2>
           <p className="mt-0.5 text-xs text-muted">Manage supplier contacts, payment terms and ledger.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <TableExportButtons
+            filename="suppliers"
+            sheetName="Suppliers"
+            headers={['Name', 'Contact', 'Address', 'License or Tax Number', 'Payment Terms', 'Active', 'Created At']}
+            rows={suppliers.map((supplier) => [
+              supplier.name,
+              supplier.contact,
+              supplier.address,
+              supplier.licence_or_tax_number,
+              supplier.payment_terms,
+              supplier.is_active,
+              supplier.created_at,
+            ])}
+          />
           <button
             type="button"
             onClick={() => void loadSuppliers()}

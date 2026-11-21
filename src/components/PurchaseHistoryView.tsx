@@ -6,6 +6,7 @@ import { getSupabaseErrorMessage } from '../utils/supabaseError';
 import { supabase } from '../utils/supabase';
 import { dispatchStockChanged } from '../utils/stockAlertsEvents';
 import { isDemoDataLoadedLocally, DEMO_DATA_CHANGED_EVENT } from '../data/demoDataManager';
+import { downloadTableExport } from '../utils/tableExport';
 
 interface HistoryItem {
   medicine_id: string;
@@ -262,12 +263,11 @@ export function PurchaseHistoryView({ currentRole }: { currentRole: UserRole }) 
     }
   };
 
-  const exportFiltered = async () => {
+  const exportFiltered = async (format: 'csv' | 'xlsx') => {
     if (!supabase) return setError('Supabase is not configured.');
     setExporting(true);
     setError('');
     try {
-      const XLSX = await import('@e965/xlsx');
       const { data, error: queryError } = await supabase.rpc('purchase_history', {
         p_search: search || null,
         p_payment_type: paymentType || null,
@@ -279,22 +279,26 @@ export function PurchaseHistoryView({ currentRole }: { currentRole: UserRole }) 
       });
       if (queryError) throw queryError;
       const result = data as PurchaseHistoryResult;
-      const purchaseSheet = result.rows.map((purchase) => ({
-        'PR-ID': purchase.pr_no,
-        Date: karachiDate(purchase.purchase_date),
-        Supplier: purchase.supplier_name,
-        'Invoice No.': purchase.invoice_number ?? '',
-        Items: purchase.item_count ?? purchase.items?.length ?? 0,
-        Subtotal: money(purchase.subtotal_paisa),
-        Discount: money(purchase.discount_paisa),
-        Total: money(purchase.total_paisa),
-        Payment: purchase.payment_type,
-        Paid: money(purchase.paid_paisa),
-        Due: money(purchase.due_paisa),
-        'Created By': purchase.created_by,
-        Status: purchase.status,
-        Notes: purchase.notes ?? '',
-      }));
+      const purchaseHeaders = [
+        'PR-ID', 'Date', 'Supplier', 'Invoice No.', 'Items', 'Subtotal', 'Discount',
+        'Total', 'Payment', 'Paid', 'Due', 'Created By', 'Status', 'Notes',
+      ];
+      const purchaseRows = result.rows.map((purchase) => [
+        purchase.pr_no,
+        karachiDate(purchase.purchase_date),
+        purchase.supplier_name,
+        purchase.invoice_number ?? '',
+        purchase.item_count ?? purchase.items?.length ?? 0,
+        money(purchase.subtotal_paisa),
+        money(purchase.discount_paisa),
+        money(purchase.total_paisa),
+        purchase.payment_type,
+        money(purchase.paid_paisa),
+        money(purchase.due_paisa),
+        purchase.created_by,
+        purchase.status,
+        purchase.notes ?? '',
+      ]);
       const itemSheet = result.rows.flatMap((purchase) => (purchase.items ?? []).map((item) => ({
         'PR-ID': purchase.pr_no,
         Product: item.product_name,
@@ -308,10 +312,21 @@ export function PurchaseHistoryView({ currentRole }: { currentRole: UserRole }) 
         'MRP': money(item.mrp_paisa),
         'Line Total': money(item.line_total_paisa),
       })));
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(purchaseSheet), 'Purchases');
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(itemSheet), 'Items');
-      XLSX.writeFile(workbook, `purchase-history-${karachiToday()}.xlsx`);
+      if (format === 'csv') {
+        await downloadTableExport(
+          `purchase-history-${karachiToday()}`,
+          'Purchases',
+          purchaseHeaders,
+          purchaseRows,
+          'csv',
+        );
+      } else {
+        const XLSX = await import('@e965/xlsx');
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([purchaseHeaders, ...purchaseRows]), 'Purchases');
+        XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(itemSheet), 'Items');
+        XLSX.writeFile(workbook, `purchase-history-${karachiToday()}.xlsx`);
+      }
     } catch (caught) {
       setError(getSupabaseErrorMessage(caught, 'Could not export purchase history.'));
     } finally {
@@ -362,12 +377,21 @@ export function PurchaseHistoryView({ currentRole }: { currentRole: UserRole }) 
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => void exportFiltered()}
+            onClick={() => void exportFiltered('xlsx')}
             disabled={exporting}
             className="inline-flex items-center gap-1.5 rounded-control bg-primary px-3 py-1.5 text-xs font-bold text-white hover:bg-primary-hover disabled:opacity-50"
           >
             <Download className="h-3.5 w-3.5" />
-            <span>{exporting ? 'Exporting…' : 'Export Excel'}</span>
+            <span>{exporting ? 'Exporting…' : 'Export XLSX'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void exportFiltered('csv')}
+            disabled={exporting}
+            className="inline-flex items-center gap-1.5 rounded-control border border-border px-3 py-1.5 text-xs font-bold text-text disabled:opacity-50"
+          >
+            <Download className="h-3.5 w-3.5" />
+            <span>Export CSV</span>
           </button>
           <button
             type="button"

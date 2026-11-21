@@ -7,6 +7,7 @@ import {
   desktopActivate,
   desktopGetLicenseStatus,
   desktopLogin,
+  desktopRestorePortableBackup,
   desktopSetupAdmin,
   isDesktopMode,
   LocalLicenseStatus,
@@ -38,6 +39,16 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(initialError);
+  const [createdAdmin, setCreatedAdmin] = useState<{
+    id: string;
+    email: string;
+    recoveryKey: string;
+  } | null>(null);
+  const [recoveryKeySaved, setRecoveryKeySaved] = useState(false);
+  const [recoveryCopyNotice, setRecoveryCopyNotice] = useState('');
+  const [restoreRecoveryKey, setRestoreRecoveryKey] = useState('');
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreNotice, setRestoreNotice] = useState('');
 
   useEffect(() => {
     if (!desktopMode) return;
@@ -61,16 +72,42 @@ export const LoginView: React.FC<LoginViewProps> = ({
     }
   };
 
+  const handlePortableRestore = async () => {
+    setRestoreBusy(true);
+    setRestoreNotice('');
+    try {
+      const restored = await desktopRestorePortableBackup(restoreRecoveryKey.trim());
+      if (restored) setRestoreNotice('Backup restored. Sign in with an account from that backup.');
+    } catch (caught) {
+      setRestoreNotice(caught instanceof Error ? caught.message : 'Could not restore the portable backup.');
+    } finally {
+      setRestoreBusy(false);
+    }
+  };
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
     setError('');
     try {
       if (desktopMode) {
-        const result = licenseStatus?.requiresAdminSetup
-          ? await desktopSetupAdmin({ username: email.trim(), password, fullName: fullName.trim() })
-          : await desktopLogin(email.trim(), password);
-        await onLogin(result.id, result.email || result.username);
+        if (licenseStatus?.requiresAdminSetup) {
+          const result = await desktopSetupAdmin({
+            username: email.trim(),
+            password,
+            fullName: fullName.trim(),
+          });
+          setCreatedAdmin({
+            id: result.user.id,
+            email: result.user.email || result.user.username,
+            recoveryKey: result.recoveryKey,
+          });
+          setRecoveryKeySaved(false);
+          setPassword('');
+          return;
+        }
+        const user = await desktopLogin(email.trim(), password);
+        await onLogin(user.id, user.email || user.username);
         setPassword('');
         return;
       }
@@ -114,6 +151,30 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 <button type="button" onClick={() => void handleActivation()} disabled={loading} className="w-full rounded-control bg-primary px-4 py-2 text-sm font-bold text-white">
                   Activate
                 </button>
+              </div>
+            )}
+            {desktopMode && (
+              <div className="space-y-2 rounded-control border border-border bg-surface p-3">
+                <h2 className="text-sm font-bold text-text">Restore a portable backup</h2>
+                <p className="text-xs text-muted">On a new PC, restore with the recovery key before signing in.</p>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  aria-label="Recovery key for portable backup"
+                  value={restoreRecoveryKey}
+                  onChange={(event) => setRestoreRecoveryKey(event.target.value)}
+                  placeholder="Shop Admin recovery key"
+                  className="w-full rounded-control border border-border bg-white px-3 py-2 font-mono text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handlePortableRestore()}
+                  disabled={restoreBusy || restoreRecoveryKey.trim().length !== 43}
+                  className="w-full rounded-control border border-border px-3 py-2 text-sm font-bold text-text disabled:opacity-50"
+                >
+                  {restoreBusy ? 'Restoring…' : 'Choose backup and restore'}
+                </button>
+                {restoreNotice && <p role="status" className="text-xs text-muted">{restoreNotice}</p>}
               </div>
             )}
             {desktopMode && licenseStatus?.requiresAdminSetup && (
@@ -210,6 +271,63 @@ export const LoginView: React.FC<LoginViewProps> = ({
           </form>
         </section>
       </div>
+      {createdAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="recovery-key-title"
+            className="w-full max-w-lg space-y-4 rounded-card bg-white p-6 shadow-xl"
+          >
+            <h2 id="recovery-key-title" className="text-lg font-black text-text">Save your pharmacy recovery key</h2>
+            <p className="text-sm text-text">
+              This key is needed to restore an exported backup on a new PC. It is shown only now; keep it somewhere safe and separate from this computer.
+            </p>
+            <input
+              aria-label="Pharmacy recovery key"
+              readOnly
+              value={createdAdmin.recoveryKey}
+              onFocus={(event) => event.currentTarget.select()}
+              className="w-full select-all rounded-control border border-border bg-surface px-3 py-3 font-mono text-sm"
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard.writeText(createdAdmin.recoveryKey)
+                    .then(() => setRecoveryCopyNotice('Recovery key copied.'))
+                    .catch(() => setRecoveryCopyNotice('Copy was unavailable; select and copy the key above.'));
+                }}
+                className="rounded-control border border-border px-3 py-2 text-sm font-semibold text-text"
+              >
+                Copy key
+              </button>
+              {recoveryCopyNotice && <span role="status" className="text-xs text-muted">{recoveryCopyNotice}</span>}
+            </div>
+            <label className="flex items-start gap-2 text-sm text-text">
+              <input
+                type="checkbox"
+                checked={recoveryKeySaved}
+                onChange={(event) => setRecoveryKeySaved(event.target.checked)}
+                className="mt-0.5"
+              />
+              I have saved this recovery key somewhere safe.
+            </label>
+            <button
+              type="button"
+              disabled={!recoveryKeySaved}
+              onClick={() => {
+                const admin = createdAdmin;
+                setCreatedAdmin(null);
+                void onLogin(admin.id, admin.email);
+              }}
+              className="w-full rounded-control bg-primary px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Continue to Pharma Care
+            </button>
+          </section>
+        </div>
+      )}
     </main>
   );
 };

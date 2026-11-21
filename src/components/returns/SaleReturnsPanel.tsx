@@ -19,6 +19,7 @@ import { STOCK_CHANGED_EVENT } from '../../utils/stockAlertsEvents';
 import { parseReceiptScan } from '../../utils/receiptLinks';
 import { normalizeReturnInvoiceInput } from '../../utils/returnInvoiceInput';
 import { useBarcodeScanner } from '../../utils/useBarcodeScanner';
+import { TableExportButtons } from '../TableExportButtons';
 
 interface SaleReturnsPanelProps {
   canReview: boolean;
@@ -406,9 +407,25 @@ export const SaleReturnsPanel: React.FC<SaleReturnsPanelProps> = ({
                 <section className="space-y-3 border-t border-border pt-4">
                   <div className="flex items-center justify-between">
                     <h3 className="font-bold text-text">Pending approval ({pending.length})</h3>
-                    <button type="button" onClick={() => void refreshPending()} disabled={busy} aria-label="Refresh pending returns" className="rounded-control p-2 text-muted hover:bg-surface-muted">
-                      <RefreshCw size={16} />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <TableExportButtons
+                        filename="pending-returns"
+                        sheetName="Returns"
+                        headers={['Invoice', 'Sale Date', 'Customer', 'Reason', 'Requested By', 'Requested At', 'Items']}
+                        rows={pending.map((request) => [
+                          request.invoiceNumber,
+                          request.saleDate,
+                          request.customerName,
+                          request.reason,
+                          request.requestedBy,
+                          request.requestedAt,
+                          request.items.map((item) => `${item.productName} (${item.quantityBaseUnits})`).join('; '),
+                        ])}
+                      />
+                      <button type="button" onClick={() => void refreshPending()} disabled={busy} aria-label="Refresh pending returns" className="rounded-control p-2 text-muted hover:bg-surface-muted">
+                        <RefreshCw size={16} />
+                      </button>
+                    </div>
                   </div>
                   {pending.length === 0 && <p className="text-sm text-muted">No return requests awaiting approval.</p>}
                   {pending.map((request) => (

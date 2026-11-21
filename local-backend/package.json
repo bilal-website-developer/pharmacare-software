@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "tsx --test src/server.test.ts",
+    "test": "tsx --test src/server.test.ts src/db/portableBackup.test.ts src/routes/recoverySetup.test.ts",
     "build": "tsc",
     "start": "tsx src/server.ts"
   },

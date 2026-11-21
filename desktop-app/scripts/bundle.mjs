@@ -19,6 +19,7 @@ await build({
   define: {
     'process.env.CENTRAL_API_URL': JSON.stringify(centralApiUrl),
     'process.env.CENTRAL_LICENSE_PUBLIC_KEY': JSON.stringify(centralLicensePublicKey),
+    'process.env.PHARMA_LOCAL_LICENSE_DEV': JSON.stringify(process.env.PHARMA_LOCAL_LICENSE_DEV === 'true' ? 'true' : ''),
     'process.env.PHARMA_DESKTOP_HOST': JSON.stringify('true'),
   },
 });

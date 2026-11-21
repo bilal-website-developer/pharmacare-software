@@ -10,7 +10,7 @@ The desktop renderer is built into `desktop-app/renderer/` using the existing Vi
 
 ## Local database and key storage
 
-The local database uses `better-sqlite3-multiple-ciphers` with its configured database key and encrypted file backups. This is not SQLCipher compatibility mode. Electron `safeStorage` protects the database key using the current Windows user's protected storage; moving the database to another profile or machine requires a recovery mechanism that is not implemented.
+The local database uses `better-sqlite3-multiple-ciphers` with its configured database key and encrypted file backups. This is not SQLCipher compatibility mode. Electron `safeStorage` protects the database and recovery keys under the current Windows user's protected storage. Portable backups can restore the encrypted database on another PC with the recovery key, but the device-bound license still requires authorized reissue.
 
 ## License entitlement signatures
 
@@ -34,10 +34,22 @@ No business logic is moved into custom native code: the expected reverse-enginee
 
 ## Known release limitations
 
-The desktop feature set is a vertical-slice foundation, not complete offline parity. A code-signing certificate, portable encrypted-backup recovery, migration of remaining browser/in-memory workflows, filtered exports, and clean-machine install/upgrade acceptance remain outstanding. See the project audit for the full acceptance gates.
+The desktop feature set is a vertical-slice foundation, not complete offline parity. A code-signing certificate, migration of remaining browser/in-memory workflows, complete table/export coverage, device-license reissue for replacement PCs, and clean-machine install/upgrade acceptance remain outstanding. See the project audit for the full acceptance gates.
+
+## Local licensing development and recovery
+
+Local activation development uses a separate loopback-only Fastify service and generated Ed25519 keypair under ignored `central-backend/.dev/`; it does not reuse production Supabase state or keys. `desktop:local` opts into plain HTTP only for the explicitly marked loopback development build. Production packaged builds still require HTTPS. The development private key is not embedded in the desktop binary.
+
+Portable backups use an authenticated AES-256-GCM envelope to wrap the random local database key with a Shop Admin recovery key derived using scrypt. The backup contains the already-encrypted SQLite file; restore validates its cipher integrity and stored recovery-key verifier before installation. This supports data recovery on another machine, but the signed license remains bound to the original device and must be reissued by the licensing operator after transfer.
+
+Daily backups remain scheduled automatically and are portable when a recovery key is configured; Settings exposes manual portable export/restore, and the login screen allows recovery before sign-in on a replacement PC. Restore keeps rollback copies of the database and protected keys and updates the in-process database key before restarting the local API; error rollback is implemented but packaged restore acceptance remains outstanding. The license remains device-bound and requires operator reissue after transfer. CSV/XLSX exports reuse the records filtered by the respective screens. Export coverage and local data-path parity remain incomplete and are not release acceptance.
 
 ## 2026-11-21 desktop continuation
 
-The local Windows packaging environment successfully rebuilt the SQLite native module and produced an NSIS installer. A packaged-app startup smoke test exposed and fixed the backend standalone-runner guard and an IPC packaged-renderer URL check. The installer remains unsigned and was not tested through activation or business workflows because no central endpoint/key pair is configured.
+The local Windows packaging environment successfully rebuilt the SQLite native module and produced an unsigned NSIS installer. A packaged-app startup smoke test exposed and fixed the backend standalone-runner guard and an IPC packaged-renderer URL check. At that validation point the installer had not been tested through activation or business workflows; a later local-only licensing service now has API activation/check-in coverage, but packaged workflows and production central activation remain unverified.
 
 `npm audit fix` was used without `--force`. It fixed compatible transitive findings; the remaining Electron/Electron Builder chain advisories require major-version changes that were not taken because of Electron/SQLite ABI compatibility risk. See `docs/WINDOWS_DESKTOP_AUDIT.md`.
+
+## 2026-11-21 desktop continuation
+
+Added loopback development central licensing (`central:dev`, `desktop:local`), local-only Ed25519 key generation and one-time test activation, recovery-key-gated portable backup/restore, and CSV/XLSX export controls for several filtered screens. Focused central, portable backup, CSV, local-backend, and renderer checks pass. The local workflows do not establish full renderer/backend parity or validate production Supabase deployment; remaining acceptance gaps are tracked in `docs/PROJECT_CONTEXT.md` and `docs/WINDOWS_DESKTOP_AUDIT.md`.

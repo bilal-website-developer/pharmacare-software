@@ -6,7 +6,12 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { startServer } from '../../../local-backend/src/server';
-import { backupDatabase, restoreDatabase } from '../../../local-backend/src/db/database';
+import {
+  backupDatabase,
+  createPortableBackup,
+  restoreDatabase,
+  restorePortableBackup,
+} from '../../../local-backend/src/db/database';
 import { configureSecurity } from './security';
 
 type BackendHandle = Awaited<ReturnType<typeof startServer>>;
@@ -49,6 +54,20 @@ function readOrCreateDatabaseKey(): string {
   const encrypted = safeStorage.encryptString(key);
   fs.writeFileSync(keyPath, encrypted, { flag: 'wx' });
   return key;
+}
+
+function getRecoveryKeyPath(): string {
+  return path.join(getDataRoot(), 'recovery-key.bin');
+}
+
+function storeRecoveryKey(recoveryKey: string): void {
+  fs.writeFileSync(getRecoveryKeyPath(), safeStorage.encryptString(recoveryKey));
+}
+
+function readStoredRecoveryKey(): string | null {
+  const recoveryKeyPath = getRecoveryKeyPath();
+  if (!fs.existsSync(recoveryKeyPath)) return null;
+  return safeStorage.decryptString(fs.readFileSync(recoveryKeyPath));
 }
 
 function getHardwareId(): string {
@@ -159,7 +178,10 @@ function registerIpcHandlers(): void {
     const centralApiUrl = process.env.CENTRAL_API_URL;
     if (!centralApiUrl) throw new Error('CENTRAL_API_URL is not configured for this build.');
     const centralUrl = new URL(centralApiUrl);
-    if (app.isPackaged && centralUrl.protocol !== 'https:') {
+    const localDevCentral = process.env.PHARMA_LOCAL_LICENSE_DEV === 'true'
+      && centralUrl.protocol === 'http:'
+      && ['127.0.0.1', 'localhost'].includes(centralUrl.hostname);
+    if (app.isPackaged && centralUrl.protocol !== 'https:' && !localDevCentral) {
       throw new Error('The licensing service must use HTTPS in a packaged build.');
     }
     const hardwareId = getHardwareId();
@@ -197,14 +219,20 @@ function registerIpcHandlers(): void {
     ) {
       throw new TypeError('Enter a username, full name, and password of at least 10 characters.');
     }
+    let recoveryKey = readStoredRecoveryKey();
+    if (!recoveryKey) {
+      recoveryKey = crypto.randomBytes(32).toString('base64url');
+      storeRecoveryKey(recoveryKey);
+    }
     const result = await localRequest('/api/auth/setup-admin', 'POST', {
       username: username.trim(),
       password,
       fullName: fullName.trim(),
+      recoveryKey,
     }, false);
     sessionToken = result.token;
     sessionUser = result.user;
-    return sessionUser;
+    return { user: sessionUser, recoveryKey };
   });
 
   ipcMain.handle('pharma:login', async (event, credentials: unknown) => {
@@ -266,6 +294,147 @@ function registerIpcHandlers(): void {
   ipcMain.handle('pharma:restore', async (event) => {
     assertTrustedSender(event);
     return restoreFromSelectedBackup();
+  });
+
+  ipcMain.handle('pharma:portable-backup', async (event, recoveryKey: unknown) => {
+    assertTrustedSender(event);
+    if (sessionUser?.role !== 'admin' || !backend || !mainWindow) {
+      throw new Error('Only the Shop Admin can create a portable backup.');
+    }
+    if (typeof recoveryKey !== 'string') throw new TypeError('Enter the recovery key.');
+    const selected = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export portable encrypted backup',
+      defaultPath: `PharmaCare-${new Date().toISOString().slice(0, 10)}.pharmabackup`,
+      filters: [{ name: 'Pharma Care portable backup', extensions: ['pharmabackup'] }],
+    });
+    if (selected.canceled || !selected.filePath) return null;
+    return createPortableBackup(backend.db, selected.filePath, recoveryKey);
+  });
+
+  ipcMain.handle('pharma:portable-restore', async (event, recoveryKey: unknown) => {
+    assertTrustedSender(event);
+    if ((!sessionUser && sessionToken) || (sessionUser && sessionUser.role !== 'admin') || !backend || !mainWindow) {
+      throw new Error('Portable restore is available to the Shop Admin or before signing in.');
+    }
+    if (typeof recoveryKey !== 'string') throw new TypeError('Enter the recovery key.');
+    const selected = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose portable Pharma Care backup',
+      properties: ['openFile'],
+      filters: [{ name: 'Pharma Care portable backup', extensions: ['pharmabackup'] }],
+    });
+    if (selected.canceled || selected.filePaths.length === 0) return false;
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['Restore backup', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      title: 'Restore portable backup',
+      message: 'Restoring replaces the current pharmacy database. The current database will be preserved as a recovery copy.',
+    });
+    if (confirmation.response !== 0) return false;
+
+    const dataRoot = getDataRoot();
+    const databasePath = path.join(dataRoot, 'data', 'pharmadata.db');
+    const databaseKeyPath = path.join(dataRoot, 'database-key.bin');
+    const recoveryKeyPath = getRecoveryKeyPath();
+    const restoreId = crypto.randomUUID();
+    const rollbackDatabasePath = `${databasePath}.rollback-${restoreId}`;
+    const rollbackDatabaseKeyPath = `${databaseKeyPath}.rollback-${restoreId}`;
+    const rollbackRecoveryKeyPath = `${recoveryKeyPath}.rollback-${restoreId}`;
+    const stagedDatabaseKeyPath = `${databaseKeyPath}.restore-${restoreId}`;
+    const stagedRecoveryKeyPath = `${recoveryKeyPath}.restore-${restoreId}`;
+    const previousDatabaseKey = process.env.DATABASE_KEY;
+    const activeBackend = backend;
+    await activeBackend.app.close();
+    activeBackend.db.close();
+    backend = null;
+    let hadDatabase = false;
+    let hadDatabaseKey = false;
+    let hadRecoveryKey = false;
+    let restoreStarted = false;
+    try {
+      hadDatabase = fs.existsSync(databasePath);
+      hadDatabaseKey = fs.existsSync(databaseKeyPath);
+      hadRecoveryKey = fs.existsSync(recoveryKeyPath);
+      if (hadDatabase) fs.copyFileSync(databasePath, rollbackDatabasePath, fs.constants.COPYFILE_EXCL);
+      if (hadDatabaseKey) fs.copyFileSync(databaseKeyPath, rollbackDatabaseKeyPath, fs.constants.COPYFILE_EXCL);
+      if (hadRecoveryKey) fs.copyFileSync(recoveryKeyPath, rollbackRecoveryKeyPath, fs.constants.COPYFILE_EXCL);
+
+      restoreStarted = true;
+      const recoveredDatabaseKey = await restorePortableBackup(
+        selected.filePaths[0],
+        databasePath,
+        recoveryKey,
+      );
+      fs.writeFileSync(stagedDatabaseKeyPath, safeStorage.encryptString(recoveredDatabaseKey), { flag: 'wx' });
+      fs.writeFileSync(stagedRecoveryKeyPath, safeStorage.encryptString(recoveryKey), { flag: 'wx' });
+      fs.renameSync(stagedDatabaseKeyPath, databaseKeyPath);
+      fs.renameSync(stagedRecoveryKeyPath, recoveryKeyPath);
+      process.env.DATABASE_KEY = recoveredDatabaseKey;
+    } catch (error) {
+      if (restoreStarted) {
+        try {
+          if (hadDatabase) fs.copyFileSync(rollbackDatabasePath, databasePath);
+          else if (fs.existsSync(databasePath)) fs.unlinkSync(databasePath);
+          if (hadDatabaseKey) fs.copyFileSync(rollbackDatabaseKeyPath, databaseKeyPath);
+          else if (fs.existsSync(databaseKeyPath)) fs.unlinkSync(databaseKeyPath);
+          if (hadRecoveryKey) fs.copyFileSync(rollbackRecoveryKeyPath, recoveryKeyPath);
+          else if (fs.existsSync(recoveryKeyPath)) fs.unlinkSync(recoveryKeyPath);
+          if (previousDatabaseKey === undefined) delete process.env.DATABASE_KEY;
+          else process.env.DATABASE_KEY = previousDatabaseKey;
+        } catch (rollbackError) {
+          throw new Error(
+            `Portable restore failed and rollback was incomplete: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+            { cause: error },
+          );
+        }
+      }
+      throw error;
+    } finally {
+      for (const temporaryPath of [
+        rollbackDatabasePath,
+        rollbackDatabaseKeyPath,
+        rollbackRecoveryKeyPath,
+        stagedDatabaseKeyPath,
+        stagedRecoveryKeyPath,
+      ]) {
+        if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+      }
+      backend = await startServer({
+        host: '127.0.0.1',
+        port: localApiPort,
+        dbPath: databasePath,
+        localAuthToken,
+        jwtSecret: localJwtSecret,
+      });
+      await waitForBackend();
+    }
+    sessionToken = null;
+    sessionUser = null;
+    mainWindow.reload();
+    return true;
+  });
+
+  ipcMain.handle('pharma:recovery-key-status', async (event) => {
+    assertTrustedSender(event);
+    return localRequest('/api/auth/recovery-key', 'GET');
+  });
+
+  ipcMain.handle('pharma:create-recovery-key', async (event) => {
+    assertTrustedSender(event);
+    if (sessionUser?.role !== 'admin') throw new Error('Only the Shop Admin can configure a recovery key.');
+    if (readStoredRecoveryKey()) throw new Error('A recovery key is already stored for this Windows profile.');
+    const { configured } = await localRequest('/api/auth/recovery-key', 'GET') as { configured: boolean };
+    if (configured) throw new Error('A recovery key is already configured. Use the key saved during Shop Admin setup.');
+    const recoveryKey = crypto.randomBytes(32).toString('base64url');
+    storeRecoveryKey(recoveryKey);
+    try {
+      await localRequest('/api/auth/recovery-key', 'POST', { recoveryKey });
+    } catch (error) {
+      fs.unlinkSync(getRecoveryKeyPath());
+      throw error;
+    }
+    return recoveryKey;
   });
 }
 
@@ -483,7 +652,15 @@ async function startApplication(): Promise<void> {
 
   backupTimer = setInterval(() => {
     if (!backend) return;
-    void backupDatabase(backend.db).then((pathName) => {
+    const recoveryKey = readStoredRecoveryKey();
+    const backupTask = recoveryKey
+      ? createPortableBackup(
+        backend.db,
+        path.join(getDataRoot(), 'backups', `PharmaCare-${new Date().toISOString().replace(/[:.]/g, '-')}.pharmabackup`),
+        recoveryKey,
+      )
+      : backupDatabase(backend.db);
+    void backupTask.then((pathName) => {
       if (Notification.isSupported()) {
         new Notification({ title: 'Pharma Care backup complete', body: `Saved: ${path.basename(pathName)}` }).show();
       }

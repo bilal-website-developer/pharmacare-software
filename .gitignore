@@ -10,6 +10,7 @@ supabase/.temp/
 .vercel
 release/
 desktop-app/renderer/
+central-backend/.dev/
 *.db
 *.db-wal
 *.db-shm

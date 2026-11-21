@@ -14,6 +14,7 @@ import {
   buildPaymentMemoData,
 } from '../utils/receipt';
 import { buildPrintSnapshot, PrintReceiptHandler } from '../utils/printWorkflow';
+import { TableExportButtons } from './TableExportButtons';
 
 interface CustomerLedgerScreenProps {
   customers: Customer[];
@@ -182,13 +183,29 @@ export const CustomerLedgerScreen: React.FC<CustomerLedgerScreenProps> = ({
           />
         </div>
 
-        <button
-          type="button"
-          onClick={() => setShowNewCustModal(true)}
-          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-primary hover:opacity-90 rounded-control shadow-xs transition shrink-0"
-        >
-          <Plus className="w-4 h-4" /> Add customer
-        </button>
+        <div className="flex items-center gap-2">
+          <TableExportButtons
+            filename="customers"
+            sheetName="Customers"
+            headers={['Name', 'Phone', 'CNIC', 'Address', 'Credit Limit Paisa', 'Balance Paisa', 'Store Credit Paisa']}
+            rows={filteredCustomers.map((customer) => [
+              customer.name,
+              customer.phone,
+              customer.cnic,
+              customer.address,
+              customer.creditLimitPaisa,
+              customer.currentBalancePaisa,
+              customer.storeCreditPaisa,
+            ])}
+          />
+          <button
+            type="button"
+            onClick={() => setShowNewCustModal(true)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-primary hover:opacity-90 rounded-control shadow-xs transition shrink-0"
+          >
+            <Plus className="w-4 h-4" /> Add customer
+          </button>
+        </div>
       </section>
 
       {/* ── Grid of Customer Cards (2 or 3 columns) ── */}

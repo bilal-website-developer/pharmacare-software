@@ -13,4 +13,8 @@ contextBridge.exposeInMainWorld('pharmaAPI', {
     ipcRenderer.invoke('pharma:request', data),
   createBackup: () => ipcRenderer.invoke('pharma:backup'),
   restoreBackup: () => ipcRenderer.invoke('pharma:restore'),
+  createPortableBackup: (recoveryKey: string) => ipcRenderer.invoke('pharma:portable-backup', recoveryKey),
+  restorePortableBackup: (recoveryKey: string) => ipcRenderer.invoke('pharma:portable-restore', recoveryKey),
+  getRecoveryKeyStatus: () => ipcRenderer.invoke('pharma:recovery-key-status'),
+  createRecoveryKey: () => ipcRenderer.invoke('pharma:create-recovery-key'),
 });

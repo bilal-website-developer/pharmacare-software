@@ -3,12 +3,13 @@ import Database from 'better-sqlite3-multiple-ciphers';
 import crypto from 'crypto';
 import { authenticateLocalUser, createLocalUser, getUserById, updateLocalUserPassword } from '../services/authService';
 import { checkLicenseStatus } from '../services/licenseService';
+import { hashRecoveryKey, isValidRecoveryKey } from '../services/recoveryKey';
 
 export function registerAuthRoutes(app: FastifyInstance, db: Database.Database): void {
   app.post('/api/auth/setup-admin', async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = request.body as { username?: string; password?: string; fullName?: string };
-    if (!body?.username || !body.password || !body.fullName) {
-      return reply.status(400).send({ error: 'Username, password, and full name are required.' });
+    const body = request.body as { username?: string; password?: string; fullName?: string; recoveryKey?: string };
+    if (!body?.username || !body.password || !body.fullName || !isValidRecoveryKey(body.recoveryKey)) {
+      return reply.status(400).send({ error: 'Username, password, full name, and a valid recovery key are required.' });
     }
     if (!checkLicenseStatus(db).allowNewTransactions) {
       return reply.status(403).send({ error: 'A valid, active license is required before creating its Shop Admin.' });
@@ -31,6 +32,11 @@ export function registerAuthRoutes(app: FastifyInstance, db: Database.Database):
         role: 'admin',
         permissions,
       });
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare(`
+        INSERT INTO recovery_settings (id, recovery_key_verifier, created_at, updated_at)
+        VALUES (1, ?, ?, ?)
+      `).run(hashRecoveryKey(body.recoveryKey), now, now);
       const token = app.jwt.sign({
         userId: user.id,
         username: user.username,
@@ -44,6 +50,44 @@ export function registerAuthRoutes(app: FastifyInstance, db: Database.Database):
       return reply.status(201).send({ token, user });
     } catch (error: any) {
       return reply.status(400).send({ error: error.message });
+    }
+  });
+
+  app.post('/api/auth/recovery-key', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      await request.jwtVerify();
+      const user = request.user as { role: string };
+      if (user.role !== 'admin') {
+        return reply.status(403).send({ error: 'Only the Shop Admin can configure a recovery key.' });
+      }
+      const body = request.body as { recoveryKey?: string };
+      if (!isValidRecoveryKey(body?.recoveryKey)) {
+        return reply.status(400).send({ error: 'A valid recovery key is required.' });
+      }
+      const existing = db.prepare('SELECT id FROM recovery_settings WHERE id = 1').get();
+      if (existing) return reply.status(409).send({ error: 'A recovery key is already configured.' });
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare(`
+        INSERT INTO recovery_settings (id, recovery_key_verifier, created_at, updated_at)
+        VALUES (1, ?, ?, ?)
+      `).run(hashRecoveryKey(body.recoveryKey), now, now);
+      return reply.status(201).send({ success: true });
+    } catch (error) {
+      return reply.status(400).send({ error: error instanceof Error ? error.message : 'Could not configure the recovery key.' });
+    }
+  });
+
+  app.get('/api/auth/recovery-key', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      await request.jwtVerify();
+      const user = request.user as { role: string };
+      if (user.role !== 'admin') {
+        return reply.status(403).send({ error: 'Only the Shop Admin can view recovery-key status.' });
+      }
+      const configured = Boolean(db.prepare('SELECT id FROM recovery_settings WHERE id = 1').get());
+      return reply.send({ configured });
+    } catch (error) {
+      return reply.status(400).send({ error: error instanceof Error ? error.message : 'Could not load recovery-key status.' });
     }
   });
 

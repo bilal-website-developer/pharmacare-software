@@ -17,6 +17,7 @@ import {
   parseLocalDateInput,
   parseSaleDate,
 } from '../utils/salesReport';
+import { TableExportButtons } from './TableExportButtons';
 
 interface ReportsScreenProps {
   sales: CompletedSale[];
@@ -317,6 +318,21 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
         </div>
 
         <div className="flex flex-col items-end gap-1.5">
+          <TableExportButtons
+            filename="sales-report"
+            sheetName="Sales"
+            headers={['Invoice', 'Date', 'Cashier', 'Customer', 'Payment Method', 'Subtotal Paisa', 'Discount Paisa', 'Total Paisa']}
+            rows={filteredSales.map((sale) => [
+              sale.invoiceNumber,
+              sale.timestamp,
+              sale.cashierName,
+              sale.customerName,
+              sale.paymentMethod,
+              sale.subtotalPaisa,
+              sale.discountPaisa,
+              sale.totalPaisa,
+            ])}
+          />
           <div className="flex flex-wrap justify-end rounded-control border border-border bg-surface-muted/40 p-0.5 text-xs font-semibold">
             {[
               { id: 'today', label: 'Today' },

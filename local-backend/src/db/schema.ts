@@ -465,4 +465,17 @@ export function initializeSchema(db: Database.Database): void {
     const violations = db.pragma('foreign_key_check') as unknown[];
     if (violations.length) throw new Error('The local user-role migration found invalid foreign-key references.');
   }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS recovery_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      recovery_key_verifier TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+    VALUES (3, ?)
+  `).run(Math.floor(Date.now() / 1000));
 }

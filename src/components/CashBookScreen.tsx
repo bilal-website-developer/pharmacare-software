@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { CashTransaction } from '../types/pharmacy';
+import { TableExportButtons } from './TableExportButtons';
 
 interface CashBookScreenProps {
   transactions: CashTransaction[];
@@ -87,12 +88,27 @@ export const CashBookScreen: React.FC<CashBookScreenProps> = ({
           <p className="text-xs text-muted">Drawer cash inflows, petty cash expenses, and shift closing.</p>
         </div>
 
-        <button
-          onClick={() => setShowExpenseModal(true)}
-          className="px-3 py-1.5 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-control flex items-center gap-1.5 transition shadow-2xs"
-        >
-          <Plus size={14} /> Record Cash Expense
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <TableExportButtons
+            filename="cashbook"
+            sheetName="Cashbook"
+            headers={['Time', 'Type', 'Description', 'Handled By', 'Amount Paisa', 'Outflow']}
+            rows={filteredTransactions.map((transaction) => [
+              transaction.time,
+              transaction.type,
+              transaction.description,
+              transaction.handledBy,
+              transaction.amountPaisa,
+              transaction.isOutflow,
+            ])}
+          />
+          <button
+            onClick={() => setShowExpenseModal(true)}
+            className="px-3 py-1.5 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-control flex items-center gap-1.5 transition shadow-2xs"
+          >
+            <Plus size={14} /> Record Cash Expense
+          </button>
+        </div>
       </section>
 
       {/* ── 4 Slim KPI Tiles in Single Row ── */}
