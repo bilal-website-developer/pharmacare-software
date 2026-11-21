@@ -248,15 +248,15 @@ The future per-shop barcode cutover must backfill one registry across both `medi
 - Keep factual claims grounded in current code/docs; write **unknown** where verification is missing.
 
 <!-- AUTO:START -->
-Generated at (UTC): 2026-11-21T21:18:16.572Z
+Generated at (UTC): 2026-11-21T21:18:41.292Z
 Git branch: master
 
 Last 5 commit subjects:
+- Complete desktop role and installer acceptance
 - Complete desktop licensing and offline E2E
 - Add Pharma Care desktop icon and offline adapters
 - Fix Electron routing and local print requests
 - Complete desktop licensing and recovery foundation
-- Harden desktop licensing and packaging
 
 npm scripts:
 - - `dev`: `vite --port=3000 --host=0.0.0.0`
@@ -319,7 +319,7 @@ Environment variable names from .env.example files (values are not read into thi
 - The React desktop login/session, local activation/admin setup, POS/catalog, customer and sales-history adapters, shop operational settings, and encrypted backup/restore foundations exist. The local backend uses `better-sqlite3-multiple-ciphers` (not SQLCipher mode), Argon2id, loopback JWT/API-token checks, FEFO checkout, role checks, cost redaction, and migrations. Seller discount enforcement uses the cashier cap. Run backend checks with `npm test --workspace=local-backend` and `npm run build --workspace=local-backend`.
 - The production central API checks Supabase identity against a `developer_owners` allowlist and consumes one-time activation keys atomically. A separate local-only service now creates a test pharmacy, one-time key, and ignored Ed25519 keypair; local activation/check-in and replay rejection were API-smoke-tested. Production deployment and real activation remain unverified.
 - The desktop Vite build aliases the Supabase client module to a null shim. This removes the Supabase SDK/client from the desktop bundle, but existing pages with browser-local/demo behavior and missing local API adapters are not made offline-complete by the alias.
-- Validation: `npm run lint`, `npm test`, the root production build, local/central/desktop/dashboard workspace builds, and `npm run desktop:local:package` pass. The local-development build produced an unsigned NSIS x64 installer. Local activation/check-in/replay behavior was API-smoke-tested; packaged UI workflows remain untested.
+- Validation: `npm run lint`, `npm test`, the root production build, local/central/desktop/dashboard workspace builds, and `npm run desktop:local:package` pass. The local-development build produced an unsigned NSIS x64 installer. The Playwright Electron E2E verifies development activation/check-in, the role matrix, supported-page navigation, persisted data after reload, and the installed activation/admin/sale/uninstall smoke path; production activation remains untested.
 - Two packaged-runtime defects were fixed during the launch test: the bundled backend no longer runs its standalone entrypoint, and IPC permits only the packaged main frame while allowing the renderer's `file:` SPA history routes.
 - Portable encrypted backup/restore uses the Shop Admin recovery key; daily backups run after key setup, with Settings and pre-login restore and database/key rollback on errors. Restored entitlements remain device-bound and need operator reissue on a replacement PC. Filtered CSV/XLSX controls exist on several list/report screens; full-table coverage and physical output checks are not complete.
 - The current bug-fix pass uses hash-based routes only in Electron and preserves web pathname routes. Local print-request creation, list, approval, modification, printed tracking, and pending counts now have backend API routes and a schema migration; local print workflows avoid Supabase and omit remote QR links/automatic approval.
