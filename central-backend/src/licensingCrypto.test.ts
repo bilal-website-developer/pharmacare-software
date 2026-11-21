@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
+import { generateKeyPairSync, verify } from 'node:crypto';
 import test from 'node:test';
 import { createActivationCode, hashActivationCode, signLicenseToken } from './licensingCrypto.js';
 
@@ -18,22 +18,33 @@ test('activation codes are stored as SHA-256 hashes, not plaintext', () => {
 });
 
 test('license token signs the expected claims with the configured secret', () => {
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const claims = {
     shopId: 'shop-1',
     shopName: 'Sample Pharmacy',
     expiresAt: '2027-01-01T00:00:00.000Z',
-    hardwareId: 'device-hash',
+    hardwareId: 'a'.repeat(64),
+    status: 'ACTIVE' as const,
+    graceDays: 30,
   };
-  const token = signLicenseToken(claims, 'test-secret');
+  const token = signLicenseToken(claims, privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
   const [header, payload, signature] = token.split('.');
   assert.deepEqual(JSON.parse(Buffer.from(header, 'base64url').toString('utf8')), {
-    alg: 'HS256',
+    alg: 'EdDSA',
     typ: 'JWT',
   });
   assert.deepEqual(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')), claims);
-  assert.equal(
-    signature,
-    createHmac('sha256', 'test-secret').update(`${header}.${payload}`).digest('base64url'),
+  assert.equal(verify(
+    null,
+    Buffer.from(`${header}.${payload}`),
+    publicKey,
+    Buffer.from(signature, 'base64url'),
+  ), true);
+  assert.throws(
+    () => signLicenseToken(claims, ''),
+    /CENTRAL_LICENSE_PRIVATE_KEY/,
   );
-  assert.throws(() => signLicenseToken(claims, ''), /CENTRAL_JWT_SECRET/);
+  assert.throws(
+    () => signLicenseToken(claims, 'not a private key'),
+  );
 });

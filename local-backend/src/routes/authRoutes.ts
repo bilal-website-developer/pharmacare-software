@@ -10,8 +10,8 @@ export function registerAuthRoutes(app: FastifyInstance, db: Database.Database):
     if (!body?.username || !body.password || !body.fullName) {
       return reply.status(400).send({ error: 'Username, password, and full name are required.' });
     }
-    if (!checkLicenseStatus(db).isActivated) {
-      return reply.status(403).send({ error: 'Activate this pharmacy before creating its Shop Admin.' });
+    if (!checkLicenseStatus(db).allowNewTransactions) {
+      return reply.status(403).send({ error: 'A valid, active license is required before creating its Shop Admin.' });
     }
     const count = db.prepare('SELECT COUNT(*) AS count FROM users WHERE deleted_at IS NULL').get() as { count: number };
     if (count.count !== 0) {

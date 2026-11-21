@@ -5,7 +5,7 @@
 
 ## Executive summary
 
-The existing React application is substantial and should be preserved. This copy now has a desktop renderer build, a secure Electron/preload foundation, a local encrypted SQLite backend, activation/dashboard foundations, and a tested local POS/catalog vertical slice. It is **not a complete offline desktop product**: feature parity is partial, licensing is not validated locally, and a Windows installer could not be built because the native SQLite addon could not be rebuilt in the available environment.
+The existing React application is substantial and should be preserved. This copy now has a desktop renderer build, a secure Electron/preload foundation, a local encrypted SQLite backend, and a Windows installer that builds in the provided environment. It is **not a complete offline desktop product**: feature parity is partial, central activation is not configured, portable backup recovery and filtered exports are incomplete, and only packaged startup—not full shop workflow acceptance—has been smoke-tested.
 
 **Recommendation:** Continue in place in this standalone copy. Its previous Git history and remote were intentionally removed, and it now has a fresh local-only repository. Preserve the React UI. Do not distribute the desktop application or expose the central API as production-ready until the remaining parity, licensing, restore/recovery, installer, and deployment gates below are satisfied.
 
@@ -46,7 +46,7 @@ The existing React application is substantial and should be preserved. This copy
 | Encrypted local database | `better-sqlite3-multiple-ciphers` with protected key and encrypted-file tests; not SQLCipher compatibility mode | Qualify Electron/Windows native build, define portable recovery, access controls, and migration policy |
 | Local API security | Runtime JWT secret is required, loopback token is configured by Electron, and local API roles are tested | Continue route/schema review, test packaged IPC/API boundaries, and verify least-privilege permissions for every operation |
 | Cashier cost redaction | Helper and some POS mapping exist | Audit every API response and endpoint, then test raw response data by role |
-| Activation | One-time activation UI, atomic central redemption RPC, and local Admin setup exist | Apply/deploy the SQL and central API; test real activation, retry behavior, expiry/device enforcement, and local token verification |
+| Activation | One-time activation UI, atomic central redemption RPC, local Admin setup, and local Ed25519 verification of expiry/device/status/grace claims exist | Configure matching central private and desktop public keys; deploy/check in and test real activation, renewal, suspension and expiry end to end |
 | Developer Owner authorization | Central API checks Supabase identity and the `developer_owners` allowlist | Deploy and test policies/configuration; audit identity failure handling and administrator lifecycle |
 | Licenses, suspension, renewals, resets | Dashboard can list/change shop status and expiry; schema and server-side Owner gate exist | Implement local signature/expiry/device checks, periodic check-in and password-reset flows; verify suspension/renewal end to end |
 | Offline grace and clock rollback | Basic local timestamp/high-water logic exists | Validate signed entitlements, persist transaction high-water marks transactionally, handle clock jumps and backups/restores; define safe restricted-mode behavior |
@@ -57,13 +57,13 @@ The existing React application is substantial and should be preserved. This copy
 ## 3. Current blockers
 
 1. **Feature parity is incomplete.** Local login/session restore, activation/setup UI, POS catalog/checkout, customer lookup, sales history, shop settings, and parts of the backend are wired. Many existing screens and services still use Supabase or browser/in-memory state; do not assume desktop mode is fully offline.
-2. **Installer packaging is blocked in this environment.** `npm run desktop:renderer` now produces `desktop-app/renderer/index.html`, and the Electron TypeScript/main bundle builds. `npm run desktop:package` fails while rebuilding `better-sqlite3-multiple-ciphers`: Visual Studio C++ Build Tools are unavailable, and node-gyp warns about the workspace path containing spaces. No installer has been produced or installed.
+2. **Installer packaging succeeds; release qualification remains incomplete.** `npm run desktop:package` rebuilt `better-sqlite3-multiple-ciphers` for Electron 39.8.10 and produced `desktop-app/release/PharmaCare-1.0.0-Setup.exe`. The unpacked packaged app starts and creates its encrypted local profile after fixing two packaging/runtime issues. The installer is unsigned and has not been installed on a clean Windows machine.
 3. **Local API authorization still needs complete review.** Startup requires a JWT secret and loopback auth token; route permission checks and backend tests cover selected operations, not the full feature surface.
-4. **Licensing is not enforced end to end.** Central activation redemption is atomic and Developer Owner routes check the Supabase identity/allowlist, but local signature, expiry, status, device-binding, clock-rollback, and periodic check-in enforcement are incomplete. The central SQL/API has not been applied or deployed here.
+4. **Licensing is not verified end to end.** Local Ed25519 signature, expiry, status, device-binding, clock-rollback, and grace-period checks are implemented. Central signing/check-in now uses the matching-key protocol, but no private/public key pair, deployed central API, or live activation was configured or tested here.
 5. **Shop creation is multi-step.** Central shop, license, and activation creation use sequential requests rather than one transaction; failed intermediate calls may leave partial records.
-6. **Encrypted data recovery is limited.** The database and copied backups are encrypted using `better-sqlite3-multiple-ciphers`, not SQLCipher compatibility mode. The key is protected with the current Windows user's `safeStorage`; portable recovery, multi-user access, backup retention, and Windows ACL behavior are not qualified.
+6. **Encrypted data recovery is limited.** The database and copied backups are encrypted using `better-sqlite3-multiple-ciphers`, not SQLCipher compatibility mode. The key is protected with the current Windows user's `safeStorage`; exported backup recovery on another machine, backup retention, and Windows ACL behavior are not qualified.
 7. **Exports and remaining desktop flows are incomplete.** The existing web app has import/export and printing behavior, but the requested local export of filtered rows, complete restore UI, and end-to-end local equivalents for all workflows have not been verified.
-8. **Deployment prerequisites are absent.** No central Supabase configuration/deployment, signing certificate, or clean Windows VM acceptance run is available. The installer is unsigned and no signed update pipeline is configured.
+8. **Deployment prerequisites are absent.** No central signing key/API deployment, code-signing certificate, or clean Windows VM acceptance run is available. The installer is unsigned and no signed update pipeline is configured. `npm audit fix` resolved compatible findings; 8 advisories remain in the Electron/Electron Builder dependency chain because their available fixes require major upgrades and Electron ABI requalification.
 
 ## 4. Security and technology evaluation
 
@@ -143,7 +143,7 @@ Code signing is recommended for publisher identity and Windows reputation; it do
 - Root application commands are in `package.json`: `npm run dev`, `npm run build`, `npm run lint`, and `npm test`. The desktop renderer command is `npm run desktop:renderer`.
 - Workspace builds pass for the local backend, desktop shell, central backend, and developer dashboard. The root TypeScript check, root frontend tests, and local-backend tests pass after current changes.
 - The root Vite build produces the existing web app and receipt entry. The separate desktop renderer build disables `.env` loading and writes to `desktop-app/renderer/`.
-- `npm run desktop:package` is configured for NSIS but fails at Electron native-module rebuild in this environment; there is no verified installer artifact. There is no signing certificate or signed update pipeline.
+- `npm run desktop:package` completed and produced an unsigned NSIS x64 installer. A launch smoke test confirmed the packaged executable starts and creates an encrypted database/key profile in an isolated user-data directory; no activation or transaction flows were run.
 - `.env` values were not read, printed, or changed. Environment variable names may be documented in `.env.example` files.
 
 ## 7. Immediate next actions

@@ -13,7 +13,7 @@ import { registerCashbookRoutes } from './routes/cashbookRoutes';
 import { registerReportRoutes } from './routes/reportRoutes';
 import { registerSettingsRoutes } from './routes/settingsRoutes';
 import { backupDatabase } from './db/database';
-import { activateShopLicense, checkLicenseStatus } from './services/licenseService';
+import { activateShopLicense, checkLicenseStatus, recordSuccessfulCheckin } from './services/licenseService';
 import { getUserById } from './services/authService';
 
 export interface ServerOptions {
@@ -60,6 +60,7 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
     '/api/health',
     '/api/license/status',
     '/api/license/activate',
+    '/api/license/check-in',
     '/api/auth/login',
     '/api/auth/setup-admin',
   ]);
@@ -131,7 +132,7 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
   app.get('/api/license/status', async () => {
     const status = checkLicenseStatus(db);
     const users = db.prepare('SELECT COUNT(*) AS count FROM users WHERE deleted_at IS NULL').get() as { count: number };
-    return { ...status, requiresAdminSetup: status.isActivated && users.count === 0 };
+    return { ...status, requiresAdminSetup: status.allowNewTransactions && users.count === 0 };
   });
 
   app.post('/api/license/activate', async (request, reply) => {
@@ -141,8 +142,8 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
       licenseToken?: string;
       hardwareId?: string;
     };
-    if (!body.shopId || !body.shopName || !body.licenseToken) {
-      return reply.status(400).send({ error: 'shopId, shopName, and licenseToken are required.' });
+    if (!body.shopId || !body.shopName || !body.licenseToken || !body.hardwareId) {
+      return reply.status(400).send({ error: 'shopId, shopName, licenseToken, and hardwareId are required.' });
     }
     activateShopLicense(db, {
       shopId: body.shopId,
@@ -151,6 +152,19 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
       hardwareId: body.hardwareId || 'UNKNOWN',
     });
     return reply.send({ success: true });
+  });
+
+  app.post('/api/license/check-in', async (request, reply) => {
+    const body = request.body as { licenseToken?: string; hardwareId?: string };
+    if (!body?.licenseToken || !body.hardwareId) {
+      return reply.status(400).send({ error: 'licenseToken and hardwareId are required.' });
+    }
+    try {
+      recordSuccessfulCheckin(db, body.licenseToken, body.hardwareId);
+      return reply.send(checkLicenseStatus(db));
+    } catch (error) {
+      return reply.status(400).send({ error: error instanceof Error ? error.message : 'License check-in failed.' });
+    }
   });
 
   app.post('/api/backup/create', async (request, reply) => {
@@ -206,7 +220,7 @@ export async function startServer(options: ServerOptions = {}): Promise<{
 }
 
 // Standalone execution
-if (require.main === module) {
+if (require.main === module && process.env.PHARMA_DESKTOP_HOST !== 'true') {
   startServer()
     .then(({ host, port }) => {
       console.log(`Pharma Care Local Backend running on http://${host}:${port}`);

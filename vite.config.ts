@@ -26,9 +26,15 @@ export default defineConfig(() => {
       },
     ],
     resolve: {
-      alias: {
-        '@': path.resolve(projectRoot, '.'),
-      },
+      alias: [
+        { find: '@', replacement: path.resolve(projectRoot, '.') },
+        ...(process.env.PHARMA_DESKTOP_BUILD === 'true'
+          ? [{
+            find: /\/utils\/supabase\.ts$/,
+            replacement: path.resolve(projectRoot, 'src/services/desktopSupabaseStub.ts'),
+          }]
+          : []),
+      ],
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.

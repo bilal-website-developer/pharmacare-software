@@ -9,6 +9,7 @@ import {
   readUserDisplayPreferences,
   USER_DISPLAY_PREFERENCES_EVENT,
 } from '../utils/userDisplayPreferences';
+import { desktopGetLicenseStatus, isDesktopMode } from '../services/localApi';
 
 interface TopNavProps {
   currentRole: UserRole;
@@ -41,6 +42,7 @@ export const TopNav: React.FC<TopNavProps> = ({
     readUserDisplayPreferences(userId, username).animationsEnabled
   );
   const [profileOpen, setProfileOpen] = useState(false);
+  const [licenseStatus, setLicenseStatus] = useState<string | null>(null);
   const profileRef = useRef<HTMLDivElement>(null);
   const profileButtonRef = useRef<HTMLButtonElement>(null);
   const profileMenuRef = useRef<HTMLDivElement>(null);
@@ -59,6 +61,29 @@ export const TopNav: React.FC<TopNavProps> = ({
     window.addEventListener(USER_DISPLAY_PREFERENCES_EVENT, handlePreferencesChange);
     return () => window.removeEventListener(USER_DISPLAY_PREFERENCES_EVENT, handlePreferencesChange);
   }, [userId, username]);
+
+  useEffect(() => {
+    if (!isDesktopMode()) return;
+    let disposed = false;
+    const refreshLicenseStatus = () => {
+      void desktopGetLicenseStatus()
+        .then((status) => {
+          if (!disposed) setLicenseStatus(status.status);
+        })
+        .catch((error) => {
+          if (!disposed) {
+            setLicenseStatus('UNKNOWN');
+            console.error('Could not refresh the local license status:', error);
+          }
+        });
+    };
+    refreshLicenseStatus();
+    const timer = window.setInterval(refreshLicenseStatus, 60_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     if (!profileOpen) return;
@@ -121,6 +146,21 @@ export const TopNav: React.FC<TopNavProps> = ({
       </div>
 
       <div className="ml-auto flex min-w-0 items-center justify-end gap-2 sm:gap-3">
+        {licenseStatus && (
+          <span
+            role="status"
+            title={`Local license: ${licenseStatus.toLowerCase()}`}
+            className={`hidden rounded-full px-2 py-1 text-[10px] font-bold uppercase sm:inline-flex ${
+              licenseStatus === 'ACTIVE'
+                ? 'bg-success/10 text-success'
+                : licenseStatus === 'WARNING'
+                  ? 'bg-warning/10 text-warning'
+                  : 'bg-danger/10 text-danger'
+            }`}
+          >
+            License: {licenseStatus.toLowerCase()}
+          </span>
+        )}
         {currentRole !== UserRole.SUPER_ADMIN && (
           <StockAlertBell
             userId={userId}

@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, safeStorage } from 'electron';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -16,6 +17,7 @@ let mainWindow: BrowserWindow | null = null;
 let sessionToken: string | null = null;
 let sessionUser: LocalUser | null = null;
 let backupTimer: NodeJS.Timeout | null = null;
+let licenseCheckinTimer: NodeJS.Timeout | null = null;
 let isQuitting = false;
 
 const localAuthToken = crypto.randomBytes(32).toString('hex');
@@ -65,13 +67,23 @@ function getHardwareId(): string {
 }
 
 function assertTrustedSender(event: Electron.IpcMainInvokeEvent): void {
-  if (!mainWindow || event.sender.id !== mainWindow.webContents.id) {
+  if (
+    !mainWindow
+    || event.sender.id !== mainWindow.webContents.id
+    || event.senderFrame !== mainWindow.webContents.mainFrame
+  ) {
     throw new Error('Untrusted IPC sender.');
   }
   const senderUrl = event.senderFrame?.url || '';
   if (app.isPackaged) {
-    const rendererUrl = pathToFileURL(path.join(app.getAppPath(), 'renderer', 'index.html')).href;
-    if (senderUrl !== rendererUrl) throw new Error('IPC is restricted to the packaged application.');
+    try {
+      const sender = new URL(senderUrl);
+      if (sender.protocol !== 'file:' || sender.host) {
+        throw new Error('IPC is restricted to the packaged application.');
+      }
+    } catch {
+      throw new Error('IPC is restricted to the packaged application.');
+    }
     return;
   }
   const devUrl = process.env.PHARMA_DEV_URL || 'file://';
@@ -425,6 +437,7 @@ async function startApplication(): Promise<void> {
   process.env.DATABASE_KEY = databaseKey;
   process.env.NODE_ENV = 'production';
   process.env.PROGRAMDATA = dataRoot;
+  process.env.PHARMA_HARDWARE_ID = getHardwareId();
   configureSecurity();
   registerIpcHandlers();
   backend = await startServer({
@@ -437,6 +450,36 @@ async function startApplication(): Promise<void> {
   await waitForBackend();
   createApplicationMenu();
   createWindow();
+  const syncLicense = async () => {
+    const status = await localRequest('/api/license/status', 'GET', undefined, false);
+    if (!status.isActivated) return;
+    const centralApiUrl = process.env.CENTRAL_API_URL;
+    if (!centralApiUrl) throw new Error('CENTRAL_API_URL is not configured for this build.');
+    const response = await fetch(`${new URL(centralApiUrl).origin}/api/licensing/check-in`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        shopId: status.shopId,
+        hardwareId: process.env.PHARMA_HARDWARE_ID,
+        appVersion: app.getVersion(),
+        osVersion: `${process.platform} ${os.release()}`,
+      }),
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || typeof result?.licenseToken !== 'string') {
+      throw new Error(result && typeof result.error === 'string'
+        ? result.error
+        : `License check-in failed (${response.status}).`);
+    }
+    await localRequest('/api/license/check-in', 'POST', {
+      licenseToken: result.licenseToken,
+      hardwareId: process.env.PHARMA_HARDWARE_ID,
+    }, false);
+  };
+  void syncLicense().catch((error) => console.error('License check-in failed:', error));
+  licenseCheckinTimer = setInterval(() => {
+    void syncLicense().catch((error) => console.error('License check-in failed:', error));
+  }, 12 * 60 * 60 * 1000);
 
   backupTimer = setInterval(() => {
     if (!backend) return;
@@ -460,6 +503,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   isQuitting = true;
   if (backupTimer) clearInterval(backupTimer);
+  if (licenseCheckinTimer) clearInterval(licenseCheckinTimer);
   void backend.app.close().finally(() => {
     backend?.db.close();
     backend = null;

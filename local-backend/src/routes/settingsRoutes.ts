@@ -129,8 +129,8 @@ export function registerSettingsRoutes(app: FastifyInstance, db: Database.Databa
         hardwareId: string;
       };
 
-      if (!body.shopId || !body.shopName || !body.licenseToken) {
-        return reply.status(400).send({ error: 'Shop ID, shop name, and license token are required.' });
+      if (!body.shopId || !body.shopName || !body.licenseToken || !body.hardwareId) {
+        return reply.status(400).send({ error: 'Shop ID, shop name, license token, and hardware ID are required.' });
       }
 
       activateShopLicense(db, body);

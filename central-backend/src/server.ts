@@ -8,6 +8,12 @@ const app = fastify({ logger: true });
 const serviceUrl = process.env.CENTRAL_SUPABASE_URL;
 const serviceKey = process.env.CENTRAL_SUPABASE_SERVICE_KEY;
 
+function getLicenseGraceDays(value: unknown): number {
+  return Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 365
+    ? Number(value)
+    : 30;
+}
+
 await app.register(cors, {
   origin: process.env.CORS_ORIGIN ? [process.env.CORS_ORIGIN] : false,
 });
@@ -55,7 +61,11 @@ async function isDeveloperOwner(authorization: string | undefined): Promise<bool
 
 app.addHook('preHandler', async (request, reply) => {
   const routePath = request.url.split('?')[0];
-  if (routePath === '/api/health' || routePath === '/api/licensing/activate') return;
+  if (
+    routePath === '/api/health'
+    || routePath === '/api/licensing/activate'
+    || routePath === '/api/licensing/check-in'
+  ) return;
   if (!serviceUrl || !serviceKey) {
     return reply.status(503).send({ error: 'Central licensing service is not configured.' });
   }
@@ -124,7 +134,22 @@ app.post('/api/licensing/shops', async (request, reply) => {
 
 app.post('/api/licensing/activate', async (request, reply) => {
   const body = request.body as { activationCode?: string; hardwareId?: string };
-  if (!body.activationCode) return reply.status(400).send({ error: 'Activation code is required.' });
+  if (!body.activationCode || !body.hardwareId || !/^[a-f0-9]{64}$/i.test(body.hardwareId)) {
+    return reply.status(400).send({ error: 'Activation code and a valid device fingerprint are required.' });
+  }
+  const signingKey = process.env.CENTRAL_LICENSE_PRIVATE_KEY || '';
+  try {
+    signLicenseToken({
+      shopId: 'validation',
+      shopName: 'validation',
+      expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      hardwareId: body.hardwareId,
+      status: 'ACTIVE',
+      graceDays: 30,
+    }, signingKey);
+  } catch {
+    return reply.status(503).send({ error: 'Central license signing is not configured.' });
+  }
   const codeHash = hashActivationCode(body.activationCode);
   const claimed = await supabaseRequest('rpc/consume_shop_activation', {
     method: 'POST',
@@ -136,20 +161,21 @@ app.post('/api/licensing/activate', async (request, reply) => {
   const activation = claimed[0];
   if (!activation) return reply.status(404).send({ error: 'Activation code is invalid, expired, used, or unavailable.' });
   const shops = await supabaseRequest(
-    `shops?id=eq.${encodeURIComponent(activation.shop_id)}&select=*,licenses(expires_at,license_type,status)`,
+    `shops?id=eq.${encodeURIComponent(activation.shop_id)}&select=*,licenses(expires_at,license_type,status,grace_days)`,
   ) as Array<Record<string, any>>;
   const shop = shops[0];
   const license = Array.isArray(shop?.licenses) ? shop.licenses[0] : null;
   if (!shop || shop.status !== 'ACTIVE' || (license?.expires_at && new Date(license.expires_at).getTime() < Date.now())) {
     return reply.status(403).send({ error: 'This pharmacy license is not active.' });
   }
-  const secret = process.env.CENTRAL_JWT_SECRET;
   const licenseToken = signLicenseToken({
     shopId: activation.shop_id,
     shopName: shop.shop_name,
     expiresAt: license?.expires_at || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-    hardwareId: body.hardwareId || null,
-  }, secret || '');
+    hardwareId: body.hardwareId,
+    status: shop.status === 'ACTIVE' && license?.status === 'ACTIVE' ? 'ACTIVE' : 'SUSPENDED',
+    graceDays: getLicenseGraceDays(license?.grace_days),
+  }, signingKey);
   return reply.send({ success: true, licenseToken, shop });
 });
 
@@ -200,8 +226,46 @@ app.patch('/api/licensing/shops/:id', async (request, reply) => {
 });
 
 app.post('/api/licensing/check-in', async (request, reply) => {
-  const body = request.body as { shopId?: string; appVersion?: string; osVersion?: string };
-  if (!body.shopId) return reply.status(400).send({ error: 'shopId is required.' });
+  const body = request.body as { shopId?: string; hardwareId?: string; appVersion?: string; osVersion?: string };
+  if (!body.shopId || !body.hardwareId || !/^[a-f0-9]{64}$/i.test(body.hardwareId)) {
+    return reply.status(400).send({ error: 'Shop ID and a valid device fingerprint are required.' });
+  }
+  const signingKey = process.env.CENTRAL_LICENSE_PRIVATE_KEY || '';
+  try {
+    signLicenseToken({
+      shopId: 'validation',
+      shopName: 'validation',
+      expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      hardwareId: body.hardwareId,
+      status: 'ACTIVE',
+      graceDays: 30,
+    }, signingKey);
+  } catch {
+    return reply.status(503).send({ error: 'Central license signing is not configured.' });
+  }
+  const registeredDevices = await supabaseRequest(
+    `shop_activations?shop_id=eq.${encodeURIComponent(body.shopId)}&is_used=eq.true&installation_fingerprint=eq.${encodeURIComponent(body.hardwareId)}&select=id`,
+  ) as Array<{ id: string }>;
+  if (!registeredDevices.length) {
+    return reply.status(403).send({ error: 'This device is not registered for the pharmacy license.' });
+  }
+  const shops = await supabaseRequest(
+    `shops?id=eq.${encodeURIComponent(body.shopId)}&select=id,shop_name,status,licenses(expires_at,grace_days,status)`,
+  ) as Array<Record<string, any>>;
+  const shop = shops[0];
+  const license = Array.isArray(shop?.licenses) ? shop.licenses[0] : null;
+  if (!shop || !license) return reply.status(404).send({ error: 'Pharmacy license was not found.' });
+  const status = shop.status === 'ACTIVE' && license.status === 'ACTIVE' ? 'ACTIVE'
+    : shop.status === 'REVOKED' || license.status === 'REVOKED' ? 'REVOKED'
+      : 'SUSPENDED';
+  const licenseToken = signLicenseToken({
+    shopId: shop.id,
+    shopName: shop.shop_name,
+    expiresAt: license.expires_at || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+    hardwareId: body.hardwareId,
+    status,
+    graceDays: getLicenseGraceDays(license.grace_days),
+  }, signingKey);
   await supabaseRequest('shop_checkins', {
     method: 'POST',
     body: JSON.stringify({
@@ -210,7 +274,7 @@ app.post('/api/licensing/check-in', async (request, reply) => {
       os_version: body.osVersion || 'unknown',
     }),
   });
-  return reply.send({ success: true });
+  return reply.send({ success: true, licenseToken });
 });
 
 const port = Number(process.env.PORT || 4000);

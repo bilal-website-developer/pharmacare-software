@@ -3,13 +3,34 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import { buildServer } from './server';
 import { backupDatabase, createDatabaseConnection, restoreDatabase } from './db/database';
 import { initializeSchema } from './db/schema';
 import { createLocalUser, authenticateLocalUser } from './services/authService';
 import { allocateFefoStock } from './services/fefoEngine';
 import { canViewCost } from './services/costRedactor';
-import { activateShopLicense, checkLicenseStatus } from './services/licenseService';
+import { activateShopLicense, checkLicenseStatus, recordSuccessfulCheckin } from './services/licenseService';
+
+const licenseKeyPair = generateKeyPairSync('ed25519');
+process.env.CENTRAL_LICENSE_PUBLIC_KEY = licenseKeyPair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+process.env.PHARMA_HARDWARE_ID = 'HW-UUID-1234';
+
+function createTestLicenseToken(overrides: Record<string, unknown> = {}): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({
+    shopId: 'shop-test-uuid',
+    shopName: 'Test Pharmacy Shop',
+    expiresAt: new Date(Date.now() + 365 * 86400000).toISOString(),
+    hardwareId: process.env.PHARMA_HARDWARE_ID,
+    status: 'ACTIVE',
+    graceDays: 30,
+    ...overrides,
+  })).toString('base64url');
+  const content = `${header}.${payload}`;
+  const signature = sign(null, Buffer.from(content), licenseKeyPair.privateKey).toString('base64url');
+  return `${content}.${signature}`;
+}
 
 test('Phase 1: Local Backend & SQLite Core Verification', async (t) => {
   process.env.DATABASE_KEY = 'a'.repeat(64);
@@ -128,11 +149,19 @@ test('Phase 1: Local Backend & SQLite Core Verification', async (t) => {
     assert.equal(initialStatus.status, 'UNACTIVATED');
     assert.equal(initialStatus.allowNewTransactions, false);
 
+    assert.throws(() => activateShopLicense(db, {
+      shopId: 'shop-test-uuid',
+      shopName: 'Test Pharmacy Shop',
+      licenseToken: 'unsigned-token',
+      hardwareId: 'HW-UUID-1234',
+    }), /invalid, expired, or device-mismatched/i);
+    assert.equal(checkLicenseStatus(db).status, 'UNACTIVATED');
+
     // Activate shop
     activateShopLicense(db, {
       shopId: 'shop-test-uuid',
       shopName: 'Test Pharmacy Shop',
-      licenseToken: 'valid-jwt-license-token',
+      licenseToken: createTestLicenseToken(),
       hardwareId: 'HW-UUID-1234',
     });
 
@@ -140,6 +169,32 @@ test('Phase 1: Local Backend & SQLite Core Verification', async (t) => {
     assert.equal(activeStatus.status, 'ACTIVE');
     assert.equal(activeStatus.allowNewTransactions, true);
     assert.equal(activeStatus.shopName, 'Test Pharmacy Shop');
+
+    const storedToken = (db.prepare('SELECT license_token FROM license_store WHERE id = 1').get() as { license_token: string }).license_token;
+    db.prepare('UPDATE license_store SET license_token = ? WHERE id = 1')
+      .run(createTestLicenseToken({ expiresAt: new Date(Date.now() - 86400000).toISOString() }));
+    assert.match(checkLicenseStatus(db).message || '', /expired/i);
+
+    db.prepare('UPDATE license_store SET license_token = ? WHERE id = 1')
+      .run(createTestLicenseToken({ hardwareId: 'another-device' }));
+    assert.match(checkLicenseStatus(db).message || '', /signature or device binding/i);
+
+    const [header, payload, signature] = storedToken.split('.');
+    const corruptedSignature = `${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
+    db.prepare('UPDATE license_store SET license_token = ? WHERE id = 1')
+      .run(`${header}.${payload}.${corruptedSignature}`);
+    assert.match(checkLicenseStatus(db).message || '', /signature or device binding/i);
+
+    db.prepare('UPDATE license_store SET license_token = ? WHERE id = 1').run(storedToken);
+    db.prepare('UPDATE license_store SET last_verified_online = ? WHERE id = 1')
+      .run(Math.floor(Date.now() / 1000) - 31 * 86400);
+    assert.equal(checkLicenseStatus(db).status, 'RESTRICTED');
+
+    recordSuccessfulCheckin(db, createTestLicenseToken({ status: 'SUSPENDED' }), 'HW-UUID-1234');
+    const suspendedStatus = checkLicenseStatus(db);
+    assert.equal(suspendedStatus.allowNewTransactions, false);
+    assert.match(suspendedStatus.message || '', /suspended/i);
+    recordSuccessfulCheckin(db, createTestLicenseToken(), 'HW-UUID-1234');
   });
 
   await t.test('6. FEFO Stock Allocation engine', () => {

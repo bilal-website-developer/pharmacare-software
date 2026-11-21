@@ -245,11 +245,11 @@ The future per-shop barcode cutover must backfill one registry across both `medi
 - Keep factual claims grounded in current code/docs; write **unknown** where verification is missing.
 
 <!-- AUTO:START -->
-Generated at (UTC): 2026-11-21T12:52:29.016Z
+Generated at (UTC): 2026-11-21T13:26:33.871Z
 Git branch: master
 
 Last 5 commit subjects:
-- unknown (git unavailable or no commits)
+- Before final agent run
 
 npm scripts:
 - - `dev`: `vite --port=3000 --host=0.0.0.0`
@@ -310,18 +310,18 @@ Environment variable names from .env.example files (values are not read into thi
 - Root and Electron package names are `pharmacare-desktop`; package-lock root metadata matches. Root `repository`, `homepage`, and `bugs` fields were absent. `.env`, `.env.*`, and actual `.env` values were left untouched; ignore rules cover local environment files.
 - Desktop renderer build now writes to `desktop-app/renderer/` without loading `.env` files; the root web build continues to use the existing Vite paths. Commands: `npm run desktop:renderer`, `npm run build --workspace=desktop-app`, and `npm run desktop:package`.
 - The React desktop login/session, local activation/admin setup, POS/catalog, customer and sales-history adapters, shop operational settings, and encrypted backup/restore foundations exist. The local backend uses `better-sqlite3-multiple-ciphers` (not SQLCipher mode), Argon2id, loopback JWT/API-token checks, FEFO checkout, role checks, cost redaction, and migrations. Seller discount enforcement uses the cashier cap. Run backend checks with `npm test --workspace=local-backend` and `npm run build --workspace=local-backend`.
-- The central API checks Supabase identity against a `developer_owners` allowlist, and a database RPC consumes one-time activation keys atomically. The dashboard supports pharmacy listing, license expiry/status management, and unused key revocation. Central SQL deployment, real activation, and production Owner policies are unverified.
-- Validation in this work: root `npm run lint`, the full `npm test` suite (including local-backend tests: 11 passing and central licensing-crypto tests: 3 passing), workspace builds, desktop renderer build, and a separate-output root Vite build passed.
-- Installer packaging did not pass: Electron Builder attempted rebuilding `better-sqlite3-multiple-ciphers` for Electron and node-gyp could not find Visual Studio C++ Build Tools; it also warned that the repository path contains spaces. No installer was produced. Electron install scripts were not approved, and no desktop runtime smoke test was completed.
-- Known limitations: many feature screens still use Supabase or browser/in-memory state; inventory, purchases, suppliers, returns, complete reports, user management, imports/filtered exports, and other workflows lack verified local parity. Local license signature/expiry/device checks and periodic check-in remain incomplete. Backup portability/recovery, installer signing, and Windows VM install/upgrade acceptance remain open. `npm install` reported 8 dependency audit findings (6 moderate, 2 high). No `.env` values were read or changed.
-- No local commit was created because the requested installer/runtime and full-offline acceptance gates did not pass; the repository still has no remote configured.
+- The central API checks Supabase identity against a `developer_owners` allowlist and consumes one-time activation keys atomically. License tokens now use Ed25519; the private key stays central, while the desktop build embeds only the public key. Local verification covers signature, expiry, device binding, suspension/revocation, clock rollback, and grace period. No key pair or central deployment was configured, so activation/check-in were not end-to-end tested.
+- The desktop Vite build aliases the Supabase client module to a null shim. This removes the Supabase SDK/client from the desktop bundle, but existing pages with browser-local/demo behavior and missing local API adapters are not made offline-complete by the alias.
+- Validation in this continuation: root `npm run lint` and `npm test` passed; local backend tests (11) and central signing tests (3) passed; central/local/desktop workspace TypeScript builds passed. `npm run desktop:package` produced an unsigned NSIS x64 installer. A packaged launch smoke test confirmed the local backend and license-status IPC start and create a database/key profile in an isolated user-data directory.
+- Two packaged-runtime defects were fixed during the launch test: the bundled backend no longer runs its standalone entrypoint, and IPC permits only the packaged main frame while allowing the renderer's `file:` SPA history routes.
+- Remaining limitations: inventory, purchases, suppliers, returns, complete reports, user management, and filtered exports do not have verified local parity. Existing backups require the current machine's protected DB key; portable recovery-key backup/restore is not implemented. Full activation, role/workflow, upgrade, printing, and offline reopen tests were not run. Installer is unsigned. The default non-breaking `npm audit fix` removed compatible findings; 8 advisories remain in the Electron/Electron Builder chain (6 moderate, 2 high) because available remediation requires major-version changes and Electron/native ABI requalification. No `.env` values were read or changed.
 
 ### Changelog
 
-- 2026-11-21: Added desktop renderer bundling with `.env` loading disabled, Seller-compatible local discount enforcement, settings adapter defaults, refreshed desktop audit/docs, and verified the available tests/builds. Installer build remains blocked by missing native build tooling.
+- 2026-11-21: Produced the x64 NSIS installer; removed the Supabase client from the desktop bundle; implemented Ed25519 license signing/verification, expiry/device/status/grace checks and periodic check-in; fixed packaged backend startup and main-frame IPC URL handling. Added tests for local license failure cases. Activation remains unverified without the central deployment and matching build key.
 
 ### Decisions and known issues
 
 - Implementation tradeoffs and security limitations are documented in [DECISIONS.md](../DECISIONS.md); this is a foundation, not a production-ready offline release.
-- The packaged renderer and main process bundle compile, but native SQLite ABI rebuild is unverified and installer packaging currently fails.
-- Central activation requires a deployed API and applied [licensing-schema.sql](../central-backend/supabase/licensing-schema.sql). Do not use production pharmacy data until licensing verification, feature parity, and encrypted-backup recovery are completed.
+- The installer builds and the packaged executable launches in an isolated profile, but activation requires the central service's `CENTRAL_LICENSE_PRIVATE_KEY`, a matching build-time `CENTRAL_LICENSE_PUBLIC_KEY`, `CENTRAL_API_URL`, and deployed [licensing-schema.sql](../central-backend/supabase/licensing-schema.sql).
+- Do not use production pharmacy data until remaining workflow parity, portable encrypted-backup recovery, end-to-end licensing, and clean-machine release acceptance are completed.
