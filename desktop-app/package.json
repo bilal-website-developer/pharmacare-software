@@ -1,0 +1,25 @@
+{
+  "name": "pharmacare-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "npm run bundle && tsc --noEmit -p tsconfig.json",
+    "bundle": "node scripts/bundle.mjs",
+    "start": "npm run build && electron .",
+    "package": "npm run build && electron-builder --win"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.4.3",
+    "@fastify/jwt": "^10.2.8",
+    "@node-rs/argon2": "^2.2.2",
+    "better-sqlite3-multiple-ciphers": "^13.2.0",
+    "electron-updater": "^6.6.2",
+    "fastify": "^5.12.8"
+  },
+  "devDependencies": {
+    "electron": "39.8.10",
+    "electron-builder": "^26.0.12",
+    "typescript": "^7.0.2"
+  }
+}

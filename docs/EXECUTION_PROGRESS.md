@@ -1,0 +1,170 @@
+# Execution Progress
+
+`docs/MASTER_PLAN.md` is the source of truth for scope. This checklist records execution state so work can resume without guessing. No secrets or database connection details belong here.
+
+## Branch and baseline
+
+- [x] Owner-directed execution branch is `feature/team-view-manage-users`; current checkout verified on that branch. Commit `6fb1fb4` was pushed to its origin upstream; no merge.
+- [x] Owner waived the staging comparison on 2026-11-07; current-only S1 inventory and snapshot package is complete based on owner-provided results.
+
+## Work packages
+
+| Package | Status | Commit hash | Migrations written | Migrations applied by owner | Tests / checks |
+|---|---|---|---|---|---|
+| 0. Branch and read-only baseline | Complete; repository/branch audit only | — | None | None | `git branch -a`, `git branch --merged main`, branch divergence and diff inspected; no application tests |
+| 1. Current-only S1 inventory and SQL snapshot | Complete; owner reports snapshot success and smoke test `complete: true` with all 26 table counts matching | — | `supabase/fresh/000_backup_to_schema.sql` + restore/rollback/smoke files | Owner ran snapshot and smoke test; assistant did not execute SQL | Owner-provided smoke output reviewed; all `match` values true |
+| 2. W1 ACL prerequisite reconciliation | ACL portion complete; owner reports A1 and table/sequence ACL changes applied, all verification checks pass, and website works without errors. Retry snapshot `backup_s2_20261111_2213` passed owner-run backup-only verification: 26 tables, `complete: true`, `checks: []`. Owner chose no cleanup; preserve all current data and mark the destructive cleanup step intentionally skipped. Missing `restore_trash_medicine(uuid)` remains a separate mismatch | — | Track A A1/A2/003 ACL package; S2 snapshot scripts, diagnostic, and backup-only verifier | A1 and S2 table ACL owner-reported applied; retry snapshot verified by owner result | Owner-reported ACL checks and app smoke good; backup-only snapshot checks pass; cleanup skipped by owner decision |
+| 3. W5 barcode UI/scanner improvements (early client-only package) | Complete; client-only, no schema/database work | `818af6c` | None | None | `npm test`, `npm run lint`, `npm run build` passed; targeted scanner (4) and label (5) tests passed |
+| 4. W2 schema foundation and Shop 1 backfill | Complete by owner report: preflight found 26 RLS-enabled tables, no shop objects/columns, and 66 policies. Owner named Shop 1 `Pharma Care`; Developer Shop is deferred to S6. Revised schema preparation and backfill passed; consolidated smoke confirms 24 tables have zero unassigned rows, one shop, no Super Admin assignment, 24 FKs/indexes, and all five privacy checks pass. Owner confirms `tenant_private` is listed but unchecked in Data API Exposed schemas and Dashboard, Products, POS, and Sales History open without errors. | — | `006_s3_failure_state_check.sql`, `006_s3_additive_shop_foundation.sql`, `007_s3_shop1_backfill.sql`, rollback, consolidated smoke test | Owner reports all SQL stages, database smoke checks, and basic app smoke check passed; assistant did not run live SQL | SQL parse and `git diff --check` pass |
+| 5. W2 tenant RLS, RPC, and Edge Function isolation | Owner reports 011/013/014/008 passed; S4 complete for the single-shop phase. Owner reports S5 batches 017, 019, 021, 023, 025, 027, 029, 032, and 039 and their smoke tests passed. Queries 033-038 found five unscoped purchase RPCs, six unscoped print RPCs, unscoped Trash operations with `restore_trash_medicine` absent, and unscoped `stock_alerts_summary`; grants deny anon/PUBLIC. Query 034 found no purchase rows and a valid unique `(shop_id, pr_no)` index/counter state. Queries 035-037 found four shop-assigned print requests, 56 shop-assigned Trash events, and two suppliers that Batch 039 backfilled. Query 040 failed because it referenced nonexistent `stock_batches.purchase_id`; corrected Query 050A-D results were supplied by the owner and reviewed. The owner reports eligibility count 1; 051 dry run and 052 apply succeeded; all six checks in corrected 053 returned PASS; and 054 returned `unscoped_business_count = 0`. The remaining S5 SQL package is complete by owner report. Broader two-shop release verification remains required. | — | S4 files 008-014; S5 inventory/migration/smoke files 015-054 as present in `supabase/fresh` | Earlier batches and Batch 039 passed by owner report; Query 050A-D reviewed; no live SQL by the assistant or push | Owner-reported S5 051-054 passed; no database SQL by the assistant. |
+| 6. W4 persistence and transactional `complete_sale` | Ready after the owner-reported S5 gate; implementation has not started | — | None | None | Not run |
+| 7. W3 stock alerts | Header alerts implemented for current single-shop schema; shop-scoped follow-up remains blocked on package 5 | — | `20261013140000_stock_alerts_summary.sql` plus rollback | Not applied; owner applies manually | `npm run lint`, `npm test`, `npm run build` passed; database/grant checks not run |
+| 8. W5 per-shop cross-table barcode registry and RPCs | Complete by owner report; batch 025 migration and rollback-only smoke test passed | — | `025_s5_shop_scoped_barcode_registry.sql` | Owner reports applied | Owner reports smoke test success; live execution was owner-run |
+| 9. W6 unused checks and ESLint (`react-hooks`) | Unused cleanup committed; strict/noUnusedParameters enabled; noUnusedLocals and ESLint await owner decision | `cce45bb` + this commit | None | None | `npm run lint`, `npm test`, `npm run build` passed |
+| 10. W7 performance and hygiene | Client first-load optimization complete; remaining hygiene pending | — | None | None | `npm run lint`, `npm test`, `npm run build` passed; first-load gzip 172.26 kB |
+| 11. Final strict TypeScript measurement/decision | Complete; strict diagnostics were zero and strict is enabled | This commit | None | None | `--strict`: 0 before/after cleanup; combined strict + noUnusedParameters: 0 |
+| 12. Consolidated staging security and feature verification | Blocked on all implementation packages and owner-applied staging migrations | — | None | None | Not run |
+
+### Fresh S5 gate recheck (2026-11-14)
+
+This recheck supersedes historical owner-reported S5 completion for the current S6 gate. The updated 050F smoke test returned `status = PASS` for same-shop customer/ledger visibility, foreign-shop exclusion, and platform Super Admin denial. The updated 050H smoke test returned `status = PASS`: all five RPCs preserved same-shop behavior, denied cross-shop access, and rejected platform Super Admins. Query 054A's supplied routine listing contains no `unscoped_business: true` entries; Query 054B returned `unscoped_business_count = 0` and `public_security_definer_routine_count = 75` (**054 PASS**). After the initial 053 attempt stopped before assertions because the selected Admin lacked `purchases`, the local smoke test was adjusted to use a qualified Admin across both shop contexts and restore its original shop. The owner reran the exact script and supplied all six `053 PASS` rows on 2026-11-14. No user permissions were changed, and the earlier stale paste with the missing `category` column is superseded. **Fresh S5 gate: PASS by owner-provided 050F, 050H, 053, and 054 results; S6 preparation may resume.** Broader two-shop release verification remains required.
+
+### S6 source preparation and owner gate (2026-11-14–15)
+
+- Added the platform Shops UI, server-backed shop identity/private-note paths, Manage Users API v5 provisioning/recovery actions, immediate suspension lockout, and per-shop account limits. The Edge Function now enforces the same explicit `manage_users` grant required by the UI for Shop Admin access.
+- Added SQL package 069 with rollback and rollback-only smoke test, read-only aggregate checks 070/071, and `README_S6.md`. After the first 069 attempt failed at postflight because one finalizer `has_function_privilege` check had an incorrect signature, the local signature was corrected. The owner reran 070 and supplied `READY`, then supplied 071 `PASS` with 27 expected/installed write guards. The first smoke attempt failed when the existing return-settings RPC raised P0001 before the new write guard was reached; the local smoke test was changed to a no-op table update, and the owner reports that corrected smoke test passed. Deployment is pending.
+- Applied S4 policy/helper definitions and `tenant_private.current_shop_id()` were not changed. The Super Admin remains platform-only. Two-shop acceptance, explicit Print Requests/Trash authorization review, and owner release remain open.
+- A Super Admin browser screenshot exposed an incorrect `pending_print_count()` poll: the RPC is shop-scoped, but the client included Super Admin in its Admin-role check. `App.tsx` now gates the poll through the `print-requests` page-access rule; the runtime fix has not yet been verified in the browser.
+- Validation after that client change: `npm run lint`, `npm run test:permissions`, alternate-output production build, and `git diff --check` passed. The normal build attempt hit Windows `EPERM` while clearing `dist/assets`; building to a temporary output directory succeeded. Full `npm test` passed before this small change. The existing Vite `__dirname` and large-chunk warnings remain. Deno is unavailable locally; the Edge Function was not independently type-checked.
+
+## Baseline measurements
+
+Measured 2026-10-13 on `master-plan/implementation`; no compiler/build configuration was changed.
+
+### Production build and first-load gzip
+
+`npm run build` passed. Vite reported these generated output chunks:
+
+| Output | Raw size | Gzip size |
+|---|---:|---:|
+| `dist/index.html` | 2.51 kB | 0.94 kB |
+| `dist/assets/index-DmS7fu4v.css` | 85.24 kB | 15.69 kB |
+| `dist/assets/index-DBnErXly.js` | 1,421.14 kB | 401.61 kB |
+| **First-load total** | **1,508.89 kB** | **418.24 kB** |
+
+First-load total includes the HTML document and the stylesheet/script it loads. At 418.24 kB gzip, it exceeds the 200 kB target by 218.24 kB (about 2.09× the target). The baseline build warned that XLSX dynamic imports did not split the library because Purchase History statically imported it, and that the minified JS chunk exceeded Vite's 500 kB warning threshold.
+
+### Optimized first-load and chunk measurements
+
+Measured after screen, print, barcode-label, and XLSX lazy loading. `npm run lint`, `npm test`, and `npm run build` passed. The HTML's modulepreload includes the shared JSX runtime, so the first-load total includes it along with the HTML, CSS, and entry JavaScript:
+
+| First-load asset | Raw size | Gzip size |
+|---|---:|---:|
+| `dist/index.html` | 2.59 kB | 0.97 kB |
+| `dist/assets/index-P9lobcgL.css` | 85.58 kB | 15.73 kB |
+| `dist/assets/index-DvBpwP71.js` | 531.33 kB | 152.23 kB |
+| `dist/assets/jsx-runtime-Dk72oS4N.js` (modulepreload) | 8.77 kB | 3.33 kB |
+| **First-load total** | **628.27 kB** | **172.26 kB** |
+
+Compared with the 418.24 kB baseline, first-load gzip is down 245.98 kB (58.8%) and is 27.74 kB below the 200 kB target.
+
+All emitted production chunks (the HTML/CSS and modulepreload are listed above):
+
+| Output chunk | Raw size | Gzip size |
+|---|---:|---:|
+| `minus-jetCy00s.js` | 0.10 kB | 0.12 kB |
+| `x-fFi39qHD.js` | 0.14 kB | 0.14 kB |
+| `search-DpaM64XC.js` | 0.16 kB | 0.16 kB |
+| `circle-check-Dmuo1IcD.js` | 0.16 kB | 0.16 kB |
+| `fetchAllSupabaseRows-CV40vh7N.js` | 0.16 kB | 0.15 kB |
+| `rotate-ccw-B5CclQD_.js` | 0.18 kB | 0.17 kB |
+| `download-Bc00Xss7.js` | 0.22 kB | 0.18 kB |
+| `pencil-DjbZbFrT.js` | 0.26 kB | 0.21 kB |
+| `lightbulb-CFtI3Oqf.js` | 0.27 kB | 0.21 kB |
+| `refresh-cw-DSlCLcNm.js` | 0.31 kB | 0.21 kB |
+| `phone-Ds0x_id1.js` | 0.31 kB | 0.22 kB |
+| `save-1wOBSYtF.js` | 0.31 kB | 0.22 kB |
+| `sparkles-bN0iFSJ_.js` | 0.48 kB | 0.27 kB |
+| `supabaseError-D_vobsQ7.js` | 0.81 kB | 0.39 kB |
+| `printRequestTypes-CoukEFHc.js` | 0.92 kB | 0.42 kB |
+| `useBarcodeScanner-COWSCUff.js` | 2.04 kB | 0.87 kB |
+| `printWorkflow-CR91LVuT.js` | 2.60 kB | 1.30 kB |
+| `MyPrintRequestsView-CjRk8X-p.js` | 3.63 kB | 1.44 kB |
+| `printSnapshot-BttJ1CBY.js` | 3.79 kB | 1.40 kB |
+| `WhatsAppRemindersView-BfzaglCF.js` | 4.09 kB | 1.67 kB |
+| `ReportsScreen-S5_ETPxI.js` | 5.56 kB | 1.50 kB |
+| `EndOfDayModal-rKD_SjOg.js` | 5.79 kB | 1.70 kB |
+| `TrashBinView-D4rjVRSU.js` | 6.93 kB | 2.35 kB |
+| `TemplatePreviewModal-Cvf7HAJm.js` | 7.86 kB | 2.86 kB |
+| `HelpSupportView-B7BPBZzV.js` | 8.27 kB | 2.97 kB |
+| `jsx-runtime-Dk72oS4N.js` | 8.77 kB | 3.33 kB |
+| `SuppliersView-C1mPSfE0.js` | 8.83 kB | 2.63 kB |
+| `CashBookScreen-DWHYEJ4J.js` | 9.34 kB | 2.46 kB |
+| `CustomerLedgerScreen-BKcBuBss.js` | 11.10 kB | 2.97 kB |
+| `PrintRequestsAdminView-Bsr6QuSO.js` | 14.24 kB | 4.41 kB |
+| `ManageUsersView-DA3Ak72h.js` | 16.10 kB | 4.49 kB |
+| `PurchaseHistoryView-Bmha2CTg.js` | 16.31 kB | 4.88 kB |
+| `StockPurchaseView-C5BcdFTe.js` | 19.54 kB | 5.40 kB |
+| `SettingsView-Dt8ju2SB.js` | 19.87 kB | 5.42 kB |
+| `MasterDataView-BjX396u_.js` | 24.00 kB | 6.73 kB |
+| `POSBillingView-DQ4hZ05b.js` | 32.01 kB | 8.37 kB |
+| `LabelPrintDialog-Bi060KqR.js` | 75.61 kB | 15.22 kB |
+| `InventoryScreen-QXejtuqC.js` | 98.64 kB | 24.48 kB |
+| `xlsx-CuSbHU4R.js` | 492.27 kB | 160.41 kB |
+| `index-DvBpwP71.js` | 531.33 kB | 152.23 kB |
+
+XLSX is now an on-demand chunk loaded only by export actions. The product inventory screen and barcode-label dialog are also deferred. The largest deferred chunk is XLSX (160.41 kB gzip); it is not needed on first load. The first-load target is met, although Vite still warns that the eager entry exceeds its 500 kB raw-size warning threshold. No dependencies were removed.
+
+### TypeScript command-line diagnostics
+
+Each flag was run separately with `npx.cmd tsc --noEmit`; no config files were edited.
+
+| Flag | Errors | Top files by diagnostic count |
+|---|---:|---|
+| `--noUnusedLocals` | 88 | `InventoryScreen.tsx` 15; `POSBillingView.tsx` 15; `POSScreen.tsx` 6; `CustomerLedgerScreen.tsx` 6; `ReportsScreen.tsx` 6; `SettingsView.tsx` 5; `EndOfDayModal.tsx` 5; `ControlledDrugScreen.tsx` 5; `RepositoryReviewView.tsx` 4; `WhatsAppRemindersView.tsx` 4 |
+| `--noUnusedParameters` | 1 | `SettingsView.tsx` 1 |
+| `--strict` | 0 | None |
+
+The one unused-parameter diagnostic is `currentRole` in `SettingsView.tsx`. The 88 unused-local diagnostics comprise 87 TS6133 diagnostics and one TS6198 unused destructuring diagnostic. Twenty-one unused import bindings were reported: `App.tsx` (`ControlledDrugScreen`, `RepositoryReviewView`); `EndOfDayModal.tsx` (`Moon`, `CheckCircle2`, `Wallet`, `ArrowDownLeft`, `ArrowUpRight`); `InventoryScreen.tsx` (`React`, `useMemo`); `MyPrintRequestsView.tsx` (`React`); `PrintRequestsAdminView.tsx` (`React`); `PurchaseHistoryView.tsx` (`React`); `StockPurchaseView.tsx` (`React`); `TemplatePreviewModal.tsx` (`useMemo`); `TrashBinView.tsx` (`React`); `WhatsAppRemindersView.tsx` (`Send`, `CheckCircle2`, `Phone`, `AlertCircle`); `inventory/InventoryUi.tsx` (`React`); and `labels/LabelPrintDialog.tsx` (`React`). Keep `RepositoryReviewView` as requested: it is imported by `App.tsx` even though the current unused-local check flags that binding.
+
+After the client cleanup in `cce45bb`: `--noUnusedLocals` reports 16 errors, all left in the protected `ControlledDrugScreen.tsx` (5), `POSScreen.tsx` (6), and `RepositoryReviewView.tsx` (4), plus the intentionally retained `RepositoryReviewView` import in `App.tsx` (1). Those three component files were not edited or deleted. `--noUnusedParameters` reports 0 and `--strict` reports 0; their combination also reports 0. Accordingly, `strict` and `noUnusedParameters` are enabled in `tsconfig.json`; `noUnusedLocals` is not enabled pending the owner's decision on those preserved diagnostics.
+
+Cleanup removed 72 of 88 initial unused-local diagnostics and the sole unused-parameter binding without changing app behavior. `ControlledDrugScreen`, `RepositoryReviewView`, and `POSScreen` remain present for the owner's decision. `npm run lint`, `npm test`, and `npm run build` all passed after the config update.
+
+### ESLint proposal (not installed; pending approval)
+
+Registry release dates verified 2026-10-13. Proposed exact development dependencies: `eslint@10.11.0` (2026-09-18), `typescript-eslint@8.71.0` (2026-09-28), and `eslint-plugin-react-hooks@7.1.1` (2026-04-17). The ESLint packages are older than 14 days. **Compatibility caveat:** `typescript-eslint@8.71.0` declares TypeScript `<6.1.0` as its peer range, while this repository declares TypeScript `^7.0.2`; confirm a compatible typescript-eslint release before installing.
+
+Proposed `eslint.config.mjs`:
+
+```js
+import tseslint from 'typescript-eslint';
+import reactHooks from 'eslint-plugin-react-hooks';
+
+export default tseslint.config(
+  ...tseslint.configs.recommended,
+  reactHooks.configs.flat.recommended,
+);
+```
+
+Proposed npm script: `"lint:eslint": "eslint ."`; no packages were installed and no ESLint config/package script was added. Await owner approval and TypeScript 7 compatibility resolution.
+
+### Unused-code candidates
+
+- No references under `src/` were found for declared dependencies `@google/genai`, `dotenv`, `express`, `@types/express`, `motion`, `autoprefixer`, or `esbuild`. These are candidates for a separate usage/build-tool review, not removed here; `esbuild` may serve the build chain, and the package scripts still mention deleting `server.js`.
+- `@e965/xlsx` and `jsbarcode` are used in source. The build specifically confirms XLSX is statically loaded through Purchase History despite dynamic imports elsewhere.
+- A source import-graph scan found `src/components/POSScreen.tsx` has no incoming source import. Test files are invoked by package scripts, and `src/main.tsx` is the HTML application entry point, so their lack of source importers is expected. `RepositoryReviewView` is imported from `src/App.tsx` and must stay.
+
+## Approved rules and stop point
+
+- Shared Supabase project with `shop_id` on every shop-owned table, conditional on two-shop isolation tests and owner acceptance.
+- `super_admin` is platform-only (`shop_id = NULL`); it manages shops, Admin accounts, and grants but cannot access shop-business pages. Use a separate Admin login for the empty Developer Shop; map existing non-Super-Admin accounts/data to Shop 1.
+- Shop Admin manages only own-shop Manager/Cashier accounts, may grant only permissions it holds, and cannot create/change Admin/Super Admin accounts or shop assignments. Staff cannot manage accounts. Super Admin alone changes account status.
+- A stock batch is sellable through its expiry date: `expiry_date >= current_date`, status `ACTIVE` or `NEAR_EXPIRY`, remaining quantity greater than zero, and active medicine. Align every conflicting helper, test, document, and SQL condition.
+- Main TypeScript package enables unused-symbol checks and ESLint first. Measure `noUnusedLocals`, `noUnusedParameters`, and `strict` separately. Strict is a separate final package and is optional if the measured issue count is not manageable.
+- Barcode UI is an early client-only package after the staging checkpoint. Product rows/cards must expose Edit, Print barcode with per-product quantity, and Make barcode; scanner test and POS/Products scan handling are required. Caps: 200 labels per product and 1,000 per print job.
+- Package 3 delivered product row/card/details actions, independent label quantities with both caps, a scanner test dialog, and keyboard-scanner parsing in Products search and POS. Barcode RPC availability is reported clearly when absent. Physical scanner/printer checks remain manual.
+- QR is out of scope. Remove `express` and `@types/express` only after confirming they are unused.
+- No SQL execution or deployment by the assistant. Migrations and rollback files only. A Cashier granted `products` may view product cost on Products/Add Product screens only; POS and other interfaces must not expose cost, batch cost, profit, or margin.
+- Show the old and proposed definitions and obtain approval before changing RLS or `is_staff`, `is_admin`, or `has_any_permission`.
+- **Current stop (S6):** Fresh S5 050F/050H/053/054 checks passed by owner-provided results above. Packages 062/064/066/067/068 remain owner-reported PASS; the 068 staff-with-settings write case was unavailable. S6 source now includes platform Shops controls, server-backed shop identity/private notes, Manage Users API v5 provisioning/recovery, immediate suspension lockout, and per-shop limits. Package 069, aggregate 070/071, API v5, and UI changes are local only; no SQL or deployment has been run. Applied S4 policy/helper definitions are unchanged. Two-shop acceptance, explicit Print Requests/Trash authorization review, package 069 owner-run smoke/final checks, and owner release remain open.

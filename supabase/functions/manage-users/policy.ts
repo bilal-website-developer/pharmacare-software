@@ -1,0 +1,284 @@
+export const ROLES = ['cashier', 'manager', 'accountant', 'admin', 'super_admin'] as const;
+export type Role = (typeof ROLES)[number];
+export const POS_PRINT_PERMISSION_KEYS = ['pos_print_sale', 'pos_print_payment'] as const;
+export const SETTINGS_SECTION_PERMISSION_KEYS = [
+  'settings_shop_profile',
+  'settings_receipt_memo',
+  'settings_receipt_qr',
+  'settings_operations',
+  'settings_demo_data',
+  'settings_whatsapp_templates',
+] as const;
+
+export function normalizePermissions(permissions: readonly string[]): string[] {
+  const unique = [...new Set(permissions)];
+  const withSettingsSections = unique.includes('settings')
+    ? unique
+    : unique.filter((permission) => !SETTINGS_SECTION_PERMISSION_KEYS.includes(permission as typeof SETTINGS_SECTION_PERMISSION_KEYS[number]));
+  return withSettingsSections.includes('pos')
+    ? withSettingsSections
+    : withSettingsSections.filter((permission) => !POS_PRINT_PERMISSION_KEYS.includes(permission as typeof POS_PRINT_PERMISSION_KEYS[number]));
+}
+
+export function canUseManageUsers(callerRole: Role, callerPermissions: readonly string[]): boolean {
+  return callerRole === 'super_admin'
+    || (callerRole === 'admin' && callerPermissions.includes('manage_users'));
+}
+
+export function canManagePlatformShops(callerRole: Role): boolean {
+  return callerRole === 'super_admin';
+}
+
+export function isShopRoleLimitReached(
+  role: Role,
+  adminCount: number,
+  staffCount: number,
+  adminLimit: number,
+  staffLimit: number,
+): boolean {
+  if (role === 'super_admin') return false;
+  return role === 'admin' ? adminCount >= adminLimit : staffCount >= staffLimit;
+}
+
+export function withoutLegacyPasswordChangeFlag(
+  appMetadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const { must_change_password: _mustChangePassword, ...remainingMetadata } = appMetadata ?? {};
+  return remainingMetadata;
+}
+
+export function canAccessShopProfile(
+  callerRole: Role,
+  callerShopId: string | null,
+  targetShopId: string | null,
+): boolean {
+  if (callerRole === 'super_admin') return callerShopId === null;
+  return callerRole === 'admin' && callerShopId !== null && targetShopId === callerShopId;
+}
+
+export function hasValidShopAssignment(role: string, shopId: string | null): boolean {
+  return ROLES.includes(role as Role) && (role === 'super_admin' ? shopId === null : shopId !== null);
+}
+
+export function assignableRolesFor(callerRole: Role, callerPermissions: readonly string[] = []): Role[] {
+  return callerRole === 'super_admin'
+    ? ['admin']
+    : callerRole === 'admin'
+      ? ['cashier', 'manager']
+      : [];
+}
+
+export function canAssignRole(
+  callerRole: Role,
+  role: Role,
+  callerPermissions: readonly string[] = []
+): boolean {
+  return assignableRolesFor(callerRole, callerPermissions).includes(role);
+}
+
+export function canViewManagedUser(
+  callerRole: Role,
+  callerId: string,
+  targetId: string,
+  targetCreatedBy: string | null,
+): boolean {
+  if (callerRole === 'super_admin' || callerId === targetId) return true;
+  return callerRole === 'admin' && targetCreatedBy === callerId;
+}
+
+export function canEditManagedUser(callerRole: Role, targetRole: Role, isSelf: boolean): boolean {
+  return callerRole !== 'super_admin' || targetRole === 'admin' || isSelf;
+}
+
+export function canViewAdminTeam(callerRole: Role, targetRole: Role): boolean {
+  return callerRole === 'super_admin' && targetRole === 'admin';
+}
+
+export function grantablePermissionsFor(
+  callerRole: Role,
+  callerPermissions: readonly string[],
+  permissionKeys: readonly string[]
+): string[] {
+  if (callerRole === 'super_admin') return [...permissionKeys];
+  if (callerRole !== 'admin') return [];
+  return callerPermissions.filter((permission) => permission !== 'manage_users');
+}
+
+export function permissionGrantDenial(
+  callerRole: Role,
+  callerPermissions: readonly string[],
+  requestedPermissions: readonly string[],
+  currentPermissions: readonly string[] = []
+): string | null {
+  const requestedSettingsSections = requestedPermissions.filter((permission) =>
+    SETTINGS_SECTION_PERMISSION_KEYS.includes(permission as typeof SETTINGS_SECTION_PERMISSION_KEYS[number])
+  );
+  const currentSettingsSections = currentPermissions.filter((permission) =>
+    SETTINGS_SECTION_PERMISSION_KEYS.includes(permission as typeof SETTINGS_SECTION_PERMISSION_KEYS[number])
+  );
+  const settingsSectionsChanged = SETTINGS_SECTION_PERMISSION_KEYS.some((permission) =>
+    requestedSettingsSections.includes(permission) !== currentSettingsSections.includes(permission)
+  );
+  if (requestedSettingsSections.length > 0 && !requestedPermissions.includes('settings')) {
+    return 'Admin settings section grants require the Settings page grant.';
+  }
+  if (settingsSectionsChanged && callerRole !== 'super_admin') {
+    return 'Only super_admin may change Admin settings section access.';
+  }
+  if (callerRole === 'super_admin') return null;
+  if (callerRole !== 'admin') return 'Only admin or super_admin may manage users.';
+  if (requestedPermissions.includes('manage_users')) return 'Only super_admin may grant Manage Users.';
+  if (requestedPermissions.some((permission) =>
+    !callerPermissions.includes(permission) && !currentPermissions.includes(permission)
+  )) {
+    return 'You may only grant permissions that you hold.';
+  }
+  return null;
+}
+
+export function canManageTarget(
+  callerRole: Role,
+  callerId: string,
+  targetId: string,
+  targetRole: Role,
+  _targetPermissions: readonly string[] = [],
+  _callerPermissions: readonly string[] = [],
+  targetCreatedBy: string | null = null,
+): boolean {
+  if (callerId === targetId) return true;
+  if (callerRole === 'super_admin') return true;
+  if (callerRole === 'admin') {
+    return targetCreatedBy === callerId && ['cashier', 'manager'].includes(targetRole);
+  }
+  return false;
+}
+
+export interface TeamProfile {
+  username: string | null;
+  role: string | null;
+  is_active: boolean | null;
+  deleted_at: string | null;
+  created_at: string;
+}
+
+export interface TeamAuthMetadata {
+  created_at?: string;
+  last_sign_in_at?: string | null;
+}
+
+export function publicTeamMember(
+  profile: TeamProfile,
+  authUser?: TeamAuthMetadata,
+) {
+  const role = String(profile.role ?? '').toLowerCase();
+  return {
+    username: profile.username || 'Unknown',
+    role: ROLES.includes(role as Role) ? role : 'unknown',
+    status: profile.deleted_at !== null
+      ? 'removed'
+      : profile.is_active === true
+        ? 'active'
+        : 'deactivated',
+    created_at: authUser?.created_at ?? profile.created_at,
+    last_sign_in_at: authUser?.last_sign_in_at ?? null,
+  };
+}
+
+interface ProfileChangePolicy {
+  action: 'update' | 'delete';
+  callerRole: Role;
+  callerId: string;
+  targetId: string;
+  targetRole: Role;
+  targetCreatedBy?: string | null;
+  nextRole?: Role;
+  targetPermissions: readonly string[];
+  nextPermissions?: readonly string[];
+  targetActive: boolean;
+  nextActive?: boolean;
+  activeAdminCount: number;
+  superAdminCount: number;
+  activeSuperAdminCount: number;
+  callerPermissions?: readonly string[];
+}
+
+function samePermissions(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return new Set(left).size === rightSet.size && left.every((permission) => rightSet.has(permission));
+}
+
+export function profileChangeDenial(change: ProfileChangePolicy): string | null {
+  const isSelf = change.callerId === change.targetId;
+  if (change.action === 'delete' && isSelf) return 'Cannot delete your own account.';
+  if (change.action === 'delete' && change.callerRole !== 'super_admin') {
+    return 'Only super_admin may remove user access.';
+  }
+
+  if (change.action === 'update') {
+    const nextRole = change.nextRole;
+    const nextPermissions = change.nextPermissions ?? [];
+    const nextActive = change.nextActive;
+    if (!nextRole || nextActive === undefined) return 'Profile role and active status are required.';
+    if (nextRole !== 'admin' && nextPermissions.some((permission) =>
+      SETTINGS_SECTION_PERMISSION_KEYS.includes(permission as typeof SETTINGS_SECTION_PERMISSION_KEYS[number])
+    )) {
+      return 'Admin settings section access can only be assigned to Admin accounts.';
+    }
+    if (isSelf && (
+      nextRole !== change.targetRole
+      || !samePermissions(nextPermissions, change.targetPermissions)
+      || nextActive !== change.targetActive
+    )) {
+      return 'Cannot change your own role, permissions, or active status.';
+    }
+    if (nextActive !== change.targetActive && change.callerRole !== 'super_admin') {
+      return 'Only super_admin may change account status.';
+    }
+    if (nextRole !== change.targetRole && !canAssignRole(change.callerRole, nextRole, change.callerPermissions)) {
+      return 'You are not allowed to assign this role.';
+    }
+    const permissionDenial = permissionGrantDenial(
+      change.callerRole,
+      change.callerPermissions ?? [],
+      nextPermissions,
+      change.targetPermissions
+    );
+    if (permissionDenial) return permissionDenial;
+  }
+
+  if (!canManageTarget(
+    change.callerRole,
+    change.callerId,
+    change.targetId,
+    change.targetRole,
+    change.targetPermissions,
+    change.callerPermissions,
+    change.targetCreatedBy ?? null,
+  )) {
+    return 'You are not allowed to manage this user.';
+  }
+
+  const nextRole = change.nextRole ?? change.targetRole;
+  const isDemoting = nextRole !== change.targetRole;
+  const isDeactivating = change.nextActive === false && change.targetActive;
+  if (change.targetRole === 'admin' && change.activeAdminCount <= 1
+    && ((change.targetActive && (change.action === 'delete' || isDemoting)) || isDeactivating)) {
+    return change.action === 'delete'
+      ? 'Cannot delete the last active admin.'
+      : 'Cannot demote or deactivate the last active admin.';
+  }
+  if (change.targetRole === 'super_admin') {
+    if (change.action === 'delete'
+      && (change.superAdminCount <= 1 || (change.targetActive && change.activeSuperAdminCount <= 1))) {
+      return 'Cannot delete the last super_admin.';
+    }
+    if (isDemoting && (change.superAdminCount <= 1 || (change.targetActive && change.activeSuperAdminCount <= 1))) {
+      return 'Cannot demote the last super_admin.';
+    }
+    if (isDeactivating && change.activeSuperAdminCount <= 1) {
+      return 'Cannot deactivate the last super_admin.';
+    }
+  }
+  return null;
+}

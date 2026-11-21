@@ -1,0 +1,225 @@
+import { APP_NAME } from '../constants/brand';
+import { DEFAULT_PHARMACY_MEMO_SETTINGS, MemoRounding, PharmacyMemoSettings } from './receipt';
+
+const COMPANY_NAME_KEY = 'pharma-care.companyName';
+const PHARMACY_MEMO_SETTINGS_KEY = 'pharma-care.pharmacyMemoSettings';
+const SHOP_PROFILE_KEY = 'pharma-care.shopProfile';
+export const SHOP_LOGO_KEY = 'pharma-care.shopLogo';
+export const SHOP_LOGO_EVENT = 'pharma-care:shop-logo-changed';
+export const DEFAULT_COMPANY_NAME = APP_NAME;
+
+export function readShopLogo(): string {
+  try {
+    return globalThis.localStorage?.getItem(SHOP_LOGO_KEY)?.trim() || '';
+  } catch {
+    return '';
+  }
+}
+
+export function saveShopLogo(logoUrl: string): boolean {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return false;
+    const cleanUrl = logoUrl.trim();
+    if (cleanUrl) {
+      storage.setItem(SHOP_LOGO_KEY, cleanUrl);
+    } else {
+      storage.removeItem(SHOP_LOGO_KEY);
+    }
+    globalThis.dispatchEvent?.(new CustomEvent(SHOP_LOGO_EVENT, { detail: { logoUrl: cleanUrl } }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function readPharmacyMemoSettings(companyName = DEFAULT_COMPANY_NAME): PharmacyMemoSettings {
+  const fallbackLogo = readShopLogo();
+  const defaults = { ...DEFAULT_PHARMACY_MEMO_SETTINGS, storeName: companyName || APP_NAME, logoUrl: fallbackLogo, printLogo: true };
+  try {
+    const savedProfile = globalThis.localStorage?.getItem(SHOP_PROFILE_KEY);
+    const profile: unknown = savedProfile ? JSON.parse(savedProfile) : null;
+    const profileValues = typeof profile === 'object' && profile !== null
+      ? profile as { phone?: unknown; city?: unknown; logoUrl?: unknown }
+      : {};
+    const fallbackPhone = typeof profileValues.phone === 'string' ? profileValues.phone : '';
+    const fallbackAddress = typeof profileValues.city === 'string' ? profileValues.city : '';
+    const profileLogo = typeof profileValues.logoUrl === 'string' ? profileValues.logoUrl : fallbackLogo;
+    const stored = globalThis.localStorage?.getItem(PHARMACY_MEMO_SETTINGS_KEY);
+    if (!stored) return { ...defaults, address: fallbackAddress, phone: fallbackPhone, logoUrl: profileLogo };
+    const parsed: unknown = JSON.parse(stored);
+    if (typeof parsed !== 'object' || parsed === null) {
+      return { ...defaults, address: fallbackAddress, phone: fallbackPhone, logoUrl: profileLogo };
+    }
+    const value = parsed as Partial<PharmacyMemoSettings> & { showBatchExpiry?: unknown };
+    const legacyShowBatchExpiry = typeof value.showBatchExpiry === 'boolean'
+      ? value.showBatchExpiry
+      : defaults.showBatchNumber;
+    const roundNet: MemoRounding = ['none', '1', '5', '10'].includes(String(value.roundNet))
+      ? value.roundNet as MemoRounding
+      : defaults.roundNet;
+    const notes = Array.isArray(value.notes) && value.notes.length === 3
+      ? value.notes.map((note, index) => typeof note === 'string' ? note : defaults.notes[index]) as PharmacyMemoSettings['notes']
+      : defaults.notes;
+    return {
+      storeName: typeof value.storeName === 'string' ? value.storeName : defaults.storeName,
+      address: typeof value.address === 'string' && value.address.trim() ? value.address : fallbackAddress,
+      phone: typeof value.phone === 'string' && value.phone.trim() ? value.phone : fallbackPhone,
+      notes,
+      terminalName: typeof value.terminalName === 'string' ? value.terminalName : defaults.terminalName,
+      showBatchNumber: typeof value.showBatchNumber === 'boolean' ? value.showBatchNumber : legacyShowBatchExpiry,
+      showExpiryDate: typeof value.showExpiryDate === 'boolean' ? value.showExpiryDate : legacyShowBatchExpiry,
+      roundNet,
+      printTax: typeof value.printTax === 'boolean' ? value.printTax : defaults.printTax,
+      duplicateLabel: typeof value.duplicateLabel === 'boolean' ? value.duplicateLabel : defaults.duplicateLabel,
+      autoPrint: typeof value.autoPrint === 'boolean' ? value.autoPrint : defaults.autoPrint,
+      numberDigits: typeof value.numberDigits === 'number' && Number.isInteger(value.numberDigits)
+        ? Math.max(1, Math.min(20, value.numberDigits))
+        : defaults.numberDigits,
+      logoUrl: typeof value.logoUrl === 'string' ? value.logoUrl : profileLogo,
+      printLogo: typeof value.printLogo === 'boolean' ? value.printLogo : true,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+export function getPharmacyMemoSettingsValidationMessage(
+  settings: PharmacyMemoSettings,
+): string | null {
+  if (!settings.storeName.trim()) return 'Enter a shop name before saving memo settings.';
+  if (!settings.terminalName.trim()) return 'Enter a terminal name before saving memo settings.';
+  const emptyNoteIndex = settings.notes.findIndex((note) => !note.trim());
+  if (emptyNoteIndex >= 0) return `Enter text for memo note ${emptyNoteIndex + 1}, or restore its default text.`;
+  if (!['none', '1', '5', '10'].includes(settings.roundNet)) return 'Choose a valid net-rounding option.';
+  if (!Number.isInteger(settings.numberDigits) || settings.numberDigits < 1 || settings.numberDigits > 20) {
+    return 'Memo number digits must be a whole number from 1 to 20.';
+  }
+  return null;
+}
+
+export function savePharmacyMemoSettings(settings: PharmacyMemoSettings): boolean {
+  if (getPharmacyMemoSettingsValidationMessage(settings)) return false;
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return false;
+    storage.setItem(PHARMACY_MEMO_SETTINGS_KEY, JSON.stringify(settings));
+    if (settings.logoUrl !== undefined && !saveShopLogo(settings.logoUrl)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface ShopProfile {
+  phone: string;
+  city: string;
+}
+
+export function readShopProfile(): ShopProfile {
+  try {
+    const saved = globalThis.localStorage?.getItem(SHOP_PROFILE_KEY);
+    if (!saved) return { phone: '', city: '' };
+    const parsed: unknown = JSON.parse(saved);
+    if (typeof parsed !== 'object' || parsed === null) return { phone: '', city: '' };
+    const values = parsed as Partial<Record<string, unknown>>;
+    return {
+      phone: typeof values.phone === 'string' ? values.phone : '',
+      city: typeof values.city === 'string' ? values.city : '',
+    };
+  } catch {
+    return { phone: '', city: '' };
+  }
+}
+
+export function readCompanyName(): string {
+  try {
+    const savedName = globalThis.localStorage?.getItem(COMPANY_NAME_KEY)?.trim();
+    return savedName || DEFAULT_COMPANY_NAME;
+  } catch {
+    return DEFAULT_COMPANY_NAME;
+  }
+}
+
+export function saveCompanyName(companyName: string): boolean {
+  const normalizedName = companyName.trim();
+  if (!normalizedName) return false;
+
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return false;
+    storage.setItem(COMPANY_NAME_KEY, normalizedName);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface AdminShopProfile {
+  shopName: string;
+  logoUrl: string;
+  phone: string;
+  city: string;
+}
+
+export function readAdminShopProfile(adminId?: string | null): AdminShopProfile {
+  if (adminId) {
+    try {
+      const saved = globalThis.localStorage?.getItem(`pharma-care.adminShopProfile.${adminId}`);
+      if (saved) {
+        const parsed: unknown = JSON.parse(saved);
+        if (typeof parsed === 'object' && parsed !== null) {
+          const v = parsed as Partial<AdminShopProfile>;
+          return {
+            shopName: typeof v.shopName === 'string' ? v.shopName : '',
+            logoUrl: typeof v.logoUrl === 'string' ? v.logoUrl : '',
+            phone: typeof v.phone === 'string' ? v.phone : '',
+            city: typeof v.city === 'string' ? v.city : '',
+          };
+        }
+      }
+    } catch {
+      // fallback
+    }
+  }
+  const profile = readShopProfile();
+  return {
+    shopName: readCompanyName() || '',
+    logoUrl: readShopLogo() || '',
+    phone: profile.phone || '',
+    city: profile.city || '',
+  };
+}
+
+export function saveAdminShopProfile(adminId: string, profile: AdminShopProfile): boolean {
+  try {
+    const storage = globalThis.localStorage;
+    if (storage && adminId) {
+      storage.setItem(`pharma-care.adminShopProfile.${adminId}`, JSON.stringify(profile));
+    }
+    if (profile.shopName.trim()) {
+      saveCompanyName(profile.shopName);
+    }
+    if (profile.logoUrl !== undefined) {
+      saveShopLogo(profile.logoUrl);
+    }
+    if (storage) {
+      storage.setItem(SHOP_PROFILE_KEY, JSON.stringify({
+        phone: profile.phone,
+        city: profile.city,
+        logoUrl: profile.logoUrl,
+      }));
+    }
+    const memo = readPharmacyMemoSettings();
+    savePharmacyMemoSettings({
+      ...memo,
+      storeName: profile.shopName.trim() || memo.storeName,
+      address: profile.city.trim() || memo.address,
+      phone: profile.phone.trim() || memo.phone,
+      logoUrl: profile.logoUrl,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}

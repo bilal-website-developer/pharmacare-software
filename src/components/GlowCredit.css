@@ -1,0 +1,13 @@
+.gc{--t:#fff;--a:#4ade80;--m:#9bc4b0;--bg:var(--sidebar-bg,#0f3d2e);font-family:Sora,system-ui,sans-serif}
+.gc-card-background .gc{--sidebar-bg:var(--surface)}
+.gc-card-background{--sidebar-bg:var(--surface)}
+.gc-light{--t:#0B3B2A;--a:#16A34A;--m:#4b7a66;--bg:#fff}
+.gc-ring{position:relative;padding:1px;border-radius:12px;border:1px solid rgba(255,255,255,0.08)}
+.gc-in{position:relative;background:var(--bg);border-radius:10px;padding:8px 10px;text-align:center;color:var(--t)}
+.gc-cap{font-size:9px;font-weight:800;letter-spacing:1.6px;color:var(--m);display:flex;gap:5px;align-items:center;justify-content:center}
+.gc-heart{width:11px;height:11px;color:#ef4444}
+.gc-name{font-size:15px;font-weight:800;margin:3px 0;letter-spacing:.3px}
+.gc-phone{font-size:11px;font-weight:600;color:var(--a);display:flex;gap:5px;align-items:center;justify-content:center;text-decoration:none}
+.gc-ico{display:inline-flex;width:12px;height:12px}
+.gc-ico svg{width:12px;height:12px}
+

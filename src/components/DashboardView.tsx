@@ -1,0 +1,348 @@
+import React, { useEffect, useState } from 'react';
+import {
+  Activity,
+  ShoppingBag,
+  TrendingUp,
+  Calendar,
+  Wallet,
+  AlertTriangle,
+  BadgeAlert,
+  ShoppingCart,
+  History,
+  Boxes,
+  ArrowRight,
+  PackagePlus,
+} from 'lucide-react';
+import { BatchStatus, CompletedSale, Product, Customer, UserRole } from '../types/pharmacy';
+import { salesForPeriod } from '../utils/salesReport';
+import type { NavItemKey } from './Sidebar';
+
+interface DashboardViewProps {
+  sales: CompletedSale[];
+  products: Product[];
+  customers: Customer[];
+  currentRole: UserRole;
+  currentUserName: string;
+  canViewProfit: boolean;
+  onNavigate: (tab: NavItemKey) => void;
+  onLoadTodayProfit: (from: Date, toExclusive: Date) => Promise<number>;
+  onTodayProfitLoaded: (profitPaisa: number | null) => void;
+  onOpenCloseDay: () => void;
+}
+
+export const DashboardView: React.FC<DashboardViewProps> = ({
+  sales,
+  products,
+  customers,
+  currentRole,
+  currentUserName,
+  canViewProfit,
+  onNavigate,
+  onLoadTodayProfit,
+  onTodayProfitLoaded,
+  onOpenCloseDay,
+}) => {
+  const canCloseDay = currentRole === UserRole.ADMIN || currentRole === UserRole.SUPER_ADMIN || currentRole === UserRole.MANAGER;
+  const todaySales = salesForPeriod(sales, 'today');
+  const monthlySales = salesForPeriod(sales, 'month');
+
+  const todaySalesPKR = todaySales.reduce((sum, s) => sum + s.totalPaisa, 0) / 100;
+  const [todayProfitPaisa, setTodayProfitPaisa] = useState<number | null>(null);
+  const [profitLoading, setProfitLoading] = useState(false);
+  const [profitError, setProfitError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    if (!canViewProfit) {
+      setTodayProfitPaisa(null);
+      setProfitError('');
+      setProfitLoading(false);
+      onTodayProfitLoaded(null);
+      return () => { active = false; };
+    }
+
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    setProfitLoading(true);
+    setProfitError('');
+    void onLoadTodayProfit(start, end)
+      .then((profitPaisa) => {
+        if (active) {
+          setTodayProfitPaisa(profitPaisa);
+          onTodayProfitLoaded(profitPaisa);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setTodayProfitPaisa(null);
+        onTodayProfitLoaded(null);
+        setProfitError(error instanceof Error ? error.message : 'Could not load today’s secure profit summary.');
+      })
+      .finally(() => {
+        if (active) setProfitLoading(false);
+      });
+
+    return () => { active = false; };
+  }, [canViewProfit, onLoadTodayProfit, onTodayProfitLoaded]);
+
+  const totalReceivablesPKR =
+    customers.reduce((sum, c) => sum + c.currentBalancePaisa, 0) / 100;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const nearExpiryCount = products.reduce(
+    (sum, product) =>
+      sum +
+      product.batches.filter((batch) => {
+        const expiry = new Date(batch.expiryDate);
+        expiry.setHours(0, 0, 0, 0);
+        const daysLeft = Math.ceil((expiry.getTime() - today.getTime()) / 86400000);
+        return batch.quantitySmallestUnit > 0 &&
+          batch.status !== BatchStatus.EXPIRED &&
+          daysLeft >= 0 &&
+          daysLeft <= 30;
+      }).length,
+    0
+  );
+  const expiredCount = products.reduce(
+    (sum, product) =>
+      sum +
+      product.batches.filter((batch) => {
+        const expiry = new Date(batch.expiryDate);
+        expiry.setHours(0, 0, 0, 0);
+        return batch.quantitySmallestUnit > 0 &&
+          (batch.status === BatchStatus.EXPIRED || expiry < today);
+      }).length,
+    0
+  );
+
+  const lowStockCount = products.filter((p) => {
+    const totalQty = p.batches.reduce((sum, b) => sum + b.quantitySmallestUnit, 0);
+    return totalQty <= p.minStockAlert;
+  }).length;
+
+  return (
+    <div className="space-y-6">
+      {/* ── Greeting Banner ──────────────────────────────────────────────── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-black text-text tracking-tight flex items-center gap-2">
+            Assalam-o-Alaikum, {currentUserName.split(' ')[0]}!
+          </h1>
+          <p className="text-xs text-muted font-medium mt-0.5">Today's Summary</p>
+        </div>
+
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          {canCloseDay && (
+            <button
+              onClick={onOpenCloseDay}
+              className="px-4 py-2 bg-primary hover:opacity-90 text-white font-bold text-xs rounded-xl shadow-md flex items-center gap-2 transition"
+            >
+              <span>Close Day</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ── Dashboard metrics ─────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 gap-3.5 md:grid-cols-4 xl:grid-cols-7">
+        {/* 1. Today's Sales */}
+        <div className="flex flex-col justify-between rounded-card border border-border bg-surface p-4 shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center">
+              <ShoppingBag className="w-4 h-4" />
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+              Today
+            </span>
+          </div>
+          <div className="mt-3">
+            <span className="text-[11px] font-medium text-muted block">Today's Sales (Rs)</span>
+            <span className="text-xl font-black text-text font-mono tracking-tight">
+              Rs. {todaySalesPKR.toFixed(0)}
+            </span>
+          </div>
+        </div>
+
+        {/* 2. Today's Profit (Gross) */}
+        <div className="flex flex-col justify-between rounded-card border border-border bg-surface p-4 shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="w-8 h-8 rounded-xl bg-teal-500/10 text-teal-600 flex items-center justify-center">
+              <TrendingUp className="w-4 h-4" />
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-teal-50 text-teal-700 border border-teal-200">
+              Gross
+            </span>
+          </div>
+          <div className="mt-3">
+            <span className="text-[11px] font-medium text-muted block">
+              {canViewProfit ? "Today's Profit (Rs)" : "Today's Invoices"}
+            </span>
+            {canViewProfit ? (
+              <div>
+                <span className="text-xl font-black text-text font-mono tracking-tight">
+                  {profitLoading
+                    ? 'Loading…'
+                    : todayProfitPaisa === null
+                      ? <button type="button" onClick={() => onNavigate('reports')} className="text-sm font-bold text-primary underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">Open Analytics</button>
+                      : `Rs. ${(todayProfitPaisa / 100).toLocaleString('en-PK', { maximumFractionDigits: 0 })}`}
+                </span>
+                {profitError && (
+                  <p title={profitError} className="mt-1 text-[10px] leading-snug text-danger">
+                    Secure profit summary needs setup. Open Analytics for details.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <span className="text-sm font-bold text-text flex items-center gap-1">
+                <Activity className="w-3.5 h-3.5" /> {todaySales.length} invoices
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* 3. Monthly Sales */}
+        <div className="flex flex-col justify-between rounded-card border border-border bg-surface p-4 shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="w-8 h-8 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+              <Calendar className="w-4 h-4" />
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
+              This Month
+            </span>
+          </div>
+          <div className="mt-3">
+            <span className="text-[11px] font-medium text-muted block">Monthly Sales (Rs)</span>
+            <span className="text-xl font-black text-text font-mono tracking-tight">
+              Rs. {(monthlySales.reduce((sum, sale) => sum + sale.totalPaisa, 0) / 100).toFixed(0)}
+            </span>
+          </div>
+        </div>
+
+        {/* Near-expiry and expired stock alerts */}
+        <div className="flex flex-col justify-between rounded-card border border-border bg-surface p-4 shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="w-8 h-8 rounded-xl bg-warning/10 text-warning flex items-center justify-center">
+              <BadgeAlert className="w-4 h-4" />
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-warning/10 text-text border border-warning/30">
+              Watch
+            </span>
+          </div>
+          <div className="mt-3">
+            <span className="text-[11px] font-medium text-muted block">Near-Expiry Batches</span>
+            <span className="text-xl font-black text-text font-mono">{nearExpiryCount}</span>
+          </div>
+        </div>
+
+        <div className="flex flex-col justify-between rounded-card border border-border bg-surface p-4 shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="w-8 h-8 rounded-xl bg-danger/10 text-danger flex items-center justify-center">
+              <AlertTriangle className="w-4 h-4" />
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-danger/10 text-danger border border-danger/20">
+              Alert
+            </span>
+          </div>
+          <div className="mt-3">
+            <span className="text-[11px] font-medium text-muted block">Expired Batches</span>
+            <span className="text-xl font-black text-danger font-mono">{expiredCount}</span>
+          </div>
+        </div>
+
+        {/* 4. Total Receivables */}
+        <div className="flex flex-col justify-between rounded-card border border-border bg-surface p-4 shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="flex h-8 w-8 items-center justify-center rounded-control bg-warning/10 text-warning">
+              <Wallet className="w-4 h-4" />
+            </div>
+            <span className="rounded border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-text">
+              Pending
+            </span>
+          </div>
+          <div className="mt-3">
+            <span className="block text-[11px] font-medium text-muted">
+              Total Receivables (Rs)
+            </span>
+            <span className="font-mono text-xl font-black tracking-tight text-text">
+              Rs. {totalReceivablesPKR.toFixed(0)}
+            </span>
+          </div>
+        </div>
+
+        {/* 5. Low Stock Products */}
+        <div className="flex flex-col justify-between rounded-card border border-border bg-surface p-4 shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="flex h-8 w-8 items-center justify-center rounded-control bg-danger/10 text-danger">
+              <AlertTriangle className="w-4 h-4" />
+            </div>
+            <span className="rounded border border-danger/20 bg-danger/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-danger">
+              Alert
+            </span>
+          </div>
+          <div className="mt-3">
+            <span className="block text-[11px] font-medium text-muted">Low Stock Products</span>
+            <span
+              className={`text-xl font-black font-mono tracking-tight ${
+                lowStockCount > 0 ? 'text-danger' : 'text-text'
+              }`}
+            >
+              {lowStockCount}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Quick Actions Grid (Matching Screenshot 2) ─────────────────────── */}
+      <div className="space-y-3">
+        <h3 className="text-xs font-black text-muted tracking-wider uppercase">
+          Quick Actions
+        </h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5">
+          {/* New Sale Button */}
+          <button
+            type="button"
+            onClick={() => onNavigate('pos')}
+            className="group flex flex-col items-center justify-center gap-2 rounded-card bg-primary p-5 text-white shadow-md transition hover:opacity-90"
+          >
+            <ShoppingCart className="w-6 h-6 group-hover:scale-110 transition-transform" />
+            <span className="text-sm font-bold">New Sale</span>
+          </button>
+
+          {/* Add Medicine */}
+          <button
+            type="button"
+            onClick={() => onNavigate('products')}
+            className="group flex flex-col items-center justify-center gap-2 rounded-card border border-border bg-surface p-5 text-text shadow-xs transition hover:bg-surface"
+          >
+            <PackagePlus className="w-6 h-6 text-primary group-hover:scale-110 transition-transform" />
+            <span className="text-sm font-bold">Add Medicine</span>
+          </button>
+
+          {/* Sales History */}
+          <button
+            type="button"
+            onClick={() => onNavigate('sales-history')}
+            className="group flex flex-col items-center justify-center gap-2 rounded-card border border-border bg-surface p-5 text-text shadow-xs transition hover:bg-surface"
+          >
+            <History className="w-6 h-6 text-muted group-hover:scale-110 transition-transform" />
+            <span className="text-sm font-bold">Sales History</span>
+          </button>
+
+          {/* Inventory */}
+          <button
+            type="button"
+            onClick={() => onNavigate('stock-inventory')}
+            className="group flex flex-col items-center justify-center gap-2 rounded-card border border-border bg-surface p-5 text-text shadow-xs transition hover:bg-surface"
+          >
+            <Boxes className="w-6 h-6 text-primary group-hover:scale-110 transition-transform" />
+            <span className="text-sm font-bold">Inventory</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+  );
+};

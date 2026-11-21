@@ -1,0 +1,577 @@
+import {
+  DrugClass,
+  PaymentMethod,
+  type BatchAllocation,
+  type CartItem,
+  type CompletedSale,
+  type Customer,
+  type SalePaymentDetail,
+  type SaleCustomerType,
+} from '../types/pharmacy';
+import { getSupabaseErrorMessage } from '../utils/supabaseError';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
+import { supabase } from '../utils/supabase';
+import { isPaymentProviderId } from './paymentProviders';
+import { findSavedSaleForResponse } from './saleResponse';
+import { isSalesProfitSummary, type SalesProfitSummary } from './salesProfit';
+
+export interface SalePaymentInput {
+  paymentMethod: Exclude<PaymentMethod, PaymentMethod.SPLIT>;
+  amountPaisa: number;
+  providerId?: string;
+  reference?: string;
+}
+
+export interface PostSaleInput {
+  customerId: string | null;
+  customerName: string;
+  customerType: SaleCustomerType;
+  customerPhone: string;
+  customerWhatsapp: string;
+  customerAddress: string;
+  customerNotes: string;
+  items: Array<{ medicineId: string; unitId: string; quantityInUnit: number }>;
+  discountPaisa: number;
+  roundingPaisa: number;
+  tenderedPaisa: number;
+  payments: SalePaymentInput[];
+}
+
+export interface CustomerAccountsData {
+  customers: Customer[];
+  ledgerEntries: Record<string, Array<{
+    id: string;
+    customerId: string;
+    date: string;
+    type: 'INVOICE' | 'PAYMENT' | 'RETURN';
+    referenceNo: string;
+    description: string;
+    debitPaisa: number;
+    creditPaisa: number;
+    runningBalancePaisa: number;
+  }>>;
+}
+
+export interface CustomerPaymentResult {
+  referenceNo: string;
+  dateTime: string;
+  balanceAfterPaisa: number;
+  storeCreditPaisa: number;
+}
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function isString(value: unknown): value is string {
+  return typeof value === 'string';
+}
+
+export function isPositiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+export function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isDrugClass(value: unknown): value is DrugClass {
+  return Object.values(DrugClass).some((drugClass) => drugClass === value);
+}
+
+function isPaymentMethod(value: unknown): value is PaymentMethod {
+  return Object.values(PaymentMethod).some((paymentMethod) => paymentMethod === value);
+}
+
+function isSalePaymentDetail(value: unknown): value is SalePaymentDetail {
+  return isRecord(value)
+    && isPaymentMethod(value.paymentMethod)
+    && value.paymentMethod !== PaymentMethod.SPLIT
+    && isPositiveInteger(value.amountPaisa)
+    && (value.providerId === undefined || isPaymentProviderId(value.providerId))
+    && (value.reference === undefined || isString(value.reference));
+}
+
+function isSaleCustomerType(value: unknown): value is SaleCustomerType {
+  return value === 'WALK_IN'
+    || value === 'REGISTERED'
+    || value === 'CREDIT'
+    || value === 'DOCTOR_CLINIC'
+    || value === 'WHOLESALE_RETAILER';
+}
+
+function isCustomer(value: unknown): value is Customer {
+  return isRecord(value)
+    && isString(value.id)
+    && isString(value.name)
+    && isString(value.phone)
+    && isString(value.address)
+    && isNonNegativeInteger(value.creditLimitPaisa)
+    && isNonNegativeInteger(value.currentBalancePaisa)
+    && isNonNegativeInteger(value.storeCreditPaisa);
+}
+
+function isLedgerEntry(value: unknown): value is CustomerAccountsData['ledgerEntries'][string][number] {
+  return isRecord(value)
+    && isString(value.id)
+    && isString(value.customerId)
+    && isString(value.date)
+    && (value.type === 'INVOICE' || value.type === 'PAYMENT' || value.type === 'RETURN')
+    && isString(value.referenceNo)
+    && isString(value.description)
+    && isNonNegativeInteger(value.debitPaisa)
+    && isNonNegativeInteger(value.creditPaisa)
+    && Number.isSafeInteger(value.runningBalancePaisa);
+}
+
+function isCustomerAccountsData(value: unknown): value is CustomerAccountsData {
+  if (!isRecord(value) || !Array.isArray(value.customers) || !value.customers.every(isCustomer)
+      || !isRecord(value.ledgerEntries)) return false;
+  return Object.values(value.ledgerEntries).every((entries) =>
+    Array.isArray(entries) && entries.every(isLedgerEntry));
+}
+
+function isBatchAllocation(value: unknown): value is BatchAllocation {
+  return isRecord(value)
+    && isString(value.batchId)
+    && isString(value.batchNumber)
+    && isString(value.expiryDate)
+    && isPositiveInteger(value.quantitySmallestUnit);
+}
+
+function isCartItem(value: unknown): value is CartItem {
+  return isRecord(value)
+    && isString(value.productId)
+    && isString(value.productName)
+    && isString(value.genericName)
+    && isString(value.batchId)
+    && isString(value.batchNumber)
+    && isString(value.expiryDate)
+    && isDrugClass(value.drugClass)
+    && (value.unitId === undefined || isString(value.unitId))
+    && isString(value.unitName)
+    && isPositiveInteger(value.conversionFactor)
+    && isPositiveInteger(value.quantityInUnit)
+    && isNonNegativeInteger(value.mrpPaisaPerUnit)
+    && value.costPaisaPerUnit === null
+    && isNonNegativeInteger(value.discountPercent)
+    && isNonNegativeInteger(value.lineTotalPaisa)
+    && Array.isArray(value.batchAllocations)
+    && value.batchAllocations.every(isBatchAllocation);
+}
+
+function isCompletedSale(value: unknown): value is CompletedSale {
+  return isRecord(value)
+    && isString(value.id)
+    && isString(value.invoiceNumber)
+    && isString(value.timestamp)
+    && isString(value.cashierName)
+    && (value.customerType === undefined || isSaleCustomerType(value.customerType))
+    && (value.customerId === null || isString(value.customerId))
+    && isString(value.customerName)
+    && isString(value.customerPhone)
+    && (value.customerWhatsapp === undefined || isString(value.customerWhatsapp))
+    && (value.customerAddress === undefined || isString(value.customerAddress))
+    && (value.customerNotes === undefined || isString(value.customerNotes))
+    && Array.isArray(value.items)
+    && value.items.every(isCartItem)
+    && isNonNegativeInteger(value.subtotalPaisa)
+    && isNonNegativeInteger(value.discountPaisa)
+    && isNonNegativeInteger(value.totalPaisa)
+    && Number.isSafeInteger(value.roundingPaisa)
+    && isPaymentMethod(value.paymentMethod)
+    && (value.paymentDetails === undefined
+      || (Array.isArray(value.paymentDetails) && value.paymentDetails.every(isSalePaymentDetail)))
+    && isNonNegativeInteger(value.amountTenderedPaisa)
+    && isNonNegativeInteger(value.changePaisa);
+}
+
+function parseSaleHistory(value: unknown): CompletedSale | null {
+  if (!isRecord(value) || !Array.isArray(value.items)) return null;
+  const items = value.items.map((item): CartItem | null => {
+    if (!isRecord(item) || !Array.isArray(item.batchAllocations)) return null;
+    const batchAllocations: BatchAllocation[] = [];
+    for (const allocation of item.batchAllocations) {
+      if (!isRecord(allocation)
+          || !isString(allocation.batchId)
+          || !isString(allocation.batchNumber)
+          || !isString(allocation.expiryDate)
+          || !isPositiveInteger(allocation.quantityBaseUnits)) return null;
+      batchAllocations.push({
+        batchId: allocation.batchId,
+        batchNumber: allocation.batchNumber,
+        expiryDate: allocation.expiryDate,
+        quantitySmallestUnit: allocation.quantityBaseUnits,
+      });
+    }
+    const firstAllocation = batchAllocations[0];
+    if (!firstAllocation) return null;
+    const candidate: unknown = {
+      productId: item.medicineId,
+      productName: item.productName,
+      genericName: item.genericName,
+      batchId: firstAllocation.batchId,
+      batchNumber: firstAllocation.batchNumber,
+      expiryDate: firstAllocation.expiryDate,
+      drugClass: item.drugClass,
+      unitId: item.unitId,
+      unitName: item.unitName,
+      conversionFactor: item.conversionFactor,
+      quantityInUnit: item.quantityInUnit,
+      mrpPaisaPerUnit: item.pricePaisaPerUnit,
+      costPaisaPerUnit: null,
+      discountPercent: 0,
+      lineTotalPaisa: item.lineTotalPaisa,
+      batchAllocations,
+    };
+    return isCartItem(candidate) ? candidate : null;
+  });
+  const parsedItems = items.filter((item): item is CartItem => item !== null);
+  if (parsedItems.length !== value.items.length) return null;
+
+  let paymentDetails: SalePaymentDetail[] | undefined;
+  if (value.paymentDetails !== undefined) {
+    if (!Array.isArray(value.paymentDetails) || !value.paymentDetails.every(isSalePaymentDetail)) return null;
+    paymentDetails = value.paymentDetails;
+  }
+
+  const sale = {
+    id: value.id,
+    invoiceNumber: value.invoiceNumber,
+    timestamp: value.timestamp,
+    cashierName: value.cashierName,
+    customerId: value.customerId,
+    customerName: value.customerName,
+    customerPhone: value.customerPhone,
+    customerType: isSaleCustomerType(value.customerType) ? value.customerType : undefined,
+    customerWhatsapp: isString(value.customerWhatsapp) ? value.customerWhatsapp : undefined,
+    customerAddress: isString(value.customerAddress) ? value.customerAddress : undefined,
+    customerNotes: isString(value.customerNotes) ? value.customerNotes : undefined,
+    items: parsedItems,
+    subtotalPaisa: value.subtotalPaisa,
+    discountPaisa: value.discountPaisa,
+    totalPaisa: value.totalPaisa,
+    roundingPaisa: value.roundingPaisa,
+    paymentMethod: value.paymentMethod,
+    ...(paymentDetails ? { paymentDetails } : {}),
+    amountTenderedPaisa: value.amountTenderedPaisa,
+    changePaisa: value.changePaisa,
+  };
+  return isCompletedSale(sale) ? sale : null;
+}
+
+export async function callSupabaseRpc<T>(
+  name: string,
+  args: Record<string, unknown> | undefined,
+  fallback: string,
+  validate: (value: unknown) => value is T,
+): Promise<T> {
+  if (!supabase) {
+    throw new Error(getSupabaseErrorMessage(new Error('Supabase is not configured.'), fallback));
+  }
+  const { data, error } = await supabase.rpc(name, args);
+  if (error) throw new Error(getSupabaseErrorMessage(error, fallback));
+  if (!validate(data)) {
+    throw new Error(getSupabaseErrorMessage(new Error(`${name} returned an invalid response.`), fallback));
+  }
+  return data;
+}
+
+async function callLocalApi<T>(path: string, validate: (value: unknown) => value is T): Promise<T> {
+  const data = await localApiRequest<unknown>(path);
+  if (!validate(data)) throw new Error('The local report service returned an invalid response.');
+  return data;
+}
+
+export async function loadPosCustomers(): Promise<Customer[]> {
+  if (isDesktopMode()) {
+    const data = await localApiRequest<{ customers?: unknown }>('/api/customers');
+    if (!Array.isArray(data.customers) || !data.customers.every(isCustomer)) {
+      throw new Error('The local customer service returned an invalid response.');
+    }
+    return data.customers;
+  }
+  return callSupabaseRpc('pos_customers', undefined, 'Could not load POS customers.', (value): value is Customer[] =>
+    Array.isArray(value) && value.every(isCustomer));
+}
+
+export async function loadCustomerAccountsSummary(): Promise<CustomerAccountsData> {
+  if (isDesktopMode()) {
+    const data = await localApiRequest<unknown>('/api/customers');
+    if (!isCustomerAccountsData(data)) {
+      throw new Error('The local customer accounts service returned an invalid response.');
+    }
+    return data;
+  }
+  return callSupabaseRpc(
+    'customer_accounts_summary',
+    undefined,
+    'Could not load customer accounts.',
+    isCustomerAccountsData,
+  );
+}
+
+export async function saveCustomer(input: {
+  name: string;
+  phone: string;
+  cnic: string;
+  address: string;
+  creditLimitPaisa: number;
+}): Promise<Customer> {
+  if (isDesktopMode()) {
+    const saved = await localApiRequest<unknown>('/api/customers', 'POST', {
+      name: input.name,
+      phone: input.phone,
+      cnic: input.cnic,
+      address: input.address,
+      creditLimitPaisa: input.creditLimitPaisa,
+    });
+    if (!isCustomer(saved)) throw new Error('The local customer service returned an invalid response.');
+    return saved;
+  }
+  return callSupabaseRpc('save_customer', {
+    p_name: input.name,
+    p_phone: input.phone,
+    p_cnic: input.cnic || null,
+    p_address: input.address,
+    p_credit_limit_paisa: input.creditLimitPaisa,
+  }, 'Could not save customer.', isCustomer);
+}
+
+export async function recordCustomerPayment(
+  customerId: string,
+  amountPaisa: number,
+  note: string,
+): Promise<CustomerPaymentResult> {
+  if (isDesktopMode()) {
+    const result = await localApiRequest<unknown>(`/api/customers/${encodeURIComponent(customerId)}/payment`, 'POST', {
+      amountPaisa,
+      note,
+    });
+    if (
+      !isRecord(result)
+      || !isString(result.referenceNo)
+      || !isString(result.dateTime)
+      || !isNonNegativeInteger(result.balanceAfterPaisa)
+      || !isNonNegativeInteger(result.storeCreditPaisa)
+    ) {
+      throw new Error('The local customer payment service returned an invalid response.');
+    }
+    return {
+      referenceNo: result.referenceNo,
+      dateTime: result.dateTime,
+      balanceAfterPaisa: result.balanceAfterPaisa,
+      storeCreditPaisa: result.storeCreditPaisa,
+    };
+  }
+  return callSupabaseRpc('record_customer_payment', {
+    p_customer_id: customerId,
+    p_amount_paisa: amountPaisa,
+    p_note: note,
+  }, 'Could not record customer payment.', (value): value is CustomerPaymentResult =>
+    isRecord(value)
+      && isString(value.referenceNo)
+      && isString(value.dateTime)
+      && isNonNegativeInteger(value.balanceAfterPaisa)
+      && isNonNegativeInteger(value.storeCreditPaisa));
+}
+
+export async function postSale(input: PostSaleInput): Promise<CompletedSale> {
+  const fallback = 'Could not complete the sale.';
+  if (isDesktopMode()) {
+    const response = await localApiRequest<unknown>('/api/pos/checkout', 'POST', input);
+    if (!isRecord(response) || !Array.isArray(response.items)) {
+      throw new Error('The local checkout service returned an invalid response.');
+    }
+    const candidate: unknown = {
+      id: response.id,
+      invoiceNumber: response.invoiceNumber,
+      timestamp: response.dateTime,
+      cashierName: response.cashierName,
+      customerId: response.customerId,
+      customerName: response.customerName,
+      customerPhone: response.customerPhone,
+      customerWhatsapp: response.customerWhatsapp,
+      customerAddress: response.customerAddress,
+      customerNotes: response.customerNotes,
+      customerType: response.customerType,
+      items: response.items.map((item) => {
+        if (!isRecord(item) || !Array.isArray(item.batchAllocations)) return null;
+        const allocations = item.batchAllocations.map((allocation) => {
+          if (!isRecord(allocation)) return null;
+          return {
+            batchId: allocation.batchId,
+            batchNumber: allocation.batchNumber,
+            expiryDate: allocation.expiryDate,
+            quantitySmallestUnit: allocation.quantitySmallestUnit,
+          };
+        });
+        const firstAllocation = allocations[0];
+        if (!firstAllocation) return null;
+        return {
+          productId: item.productId,
+          productName: item.productName,
+          genericName: item.genericName,
+          batchId: firstAllocation.batchId,
+          batchNumber: firstAllocation.batchNumber,
+          expiryDate: firstAllocation.expiryDate,
+          drugClass: item.drugClass,
+          unitId: item.unitId,
+          unitName: item.unitName,
+          conversionFactor: item.conversionFactor,
+          quantityInUnit: item.quantityInUnit,
+          mrpPaisaPerUnit: item.mrpPaisaPerUnit,
+          costPaisaPerUnit: null,
+          discountPercent: item.discountPercent,
+          lineTotalPaisa: item.lineTotalPaisa,
+          batchAllocations: allocations,
+        };
+      }),
+      subtotalPaisa: response.subtotalPaisa,
+      discountPaisa: response.discountPaisa,
+      totalPaisa: response.totalPaisa,
+      roundingPaisa: response.roundingPaisa,
+      paymentMethod: response.paymentMethod,
+      paymentDetails: response.paymentDetails,
+      amountTenderedPaisa: response.tenderedPaisa,
+      changePaisa: response.changePaisa,
+    };
+    if (!isCompletedSale(candidate)) {
+      throw new Error('The local checkout service returned invalid sale data.');
+    }
+    return candidate;
+  }
+  if (!supabase) {
+    throw new Error(getSupabaseErrorMessage(new Error('Supabase is not configured.'), fallback));
+  }
+  const { data, error } = await supabase.rpc('post_sale_with_payment_details', {
+    p_customer_id: input.customerId,
+    p_customer_name: input.customerName,
+    p_customer_type: input.customerType,
+    p_customer_phone: input.customerPhone,
+    p_customer_whatsapp: input.customerWhatsapp,
+    p_customer_address: input.customerAddress,
+    p_customer_notes: input.customerNotes,
+    p_items: input.items.map((item) => ({
+      medicine_id: item.medicineId,
+      unit_id: item.unitId,
+      quantity_in_unit: item.quantityInUnit,
+    })),
+    p_discount_paisa: input.discountPaisa,
+    p_rounding_paisa: input.roundingPaisa,
+    p_tendered_paisa: input.tenderedPaisa,
+    p_payments: input.payments.map((payment) => ({
+      payment_method: payment.paymentMethod,
+      amount_paisa: payment.amountPaisa,
+      provider_id: payment.providerId ?? null,
+      reference: payment.reference ?? null,
+    })),
+  });
+  if (error) throw new Error(getSupabaseErrorMessage(error, fallback));
+  if (isCompletedSale(data)) return data;
+
+  if (isRecord(data) && isString(data.id)) {
+    let recentSales: CompletedSale[];
+    try {
+      recentSales = await loadSalesHistory(100);
+    } catch (historyError) {
+      const reason = historyError instanceof Error ? ` ${historyError.message}` : '';
+      throw new Error(
+        `The server accepted the sale, but its response could not be verified.${reason} Check Sales History before retrying.`,
+      );
+    }
+    const savedSale = findSavedSaleForResponse(data, recentSales);
+    if (savedSale) return savedSale;
+  }
+
+  throw new Error(
+    'The server accepted the sale, but returned an unexpected response. Check Sales History before retrying.',
+  );
+}
+
+function parseSalesHistoryRows(raw: unknown[], fallbackMessage = 'Could not load sales history.'): CompletedSale[] {
+  const parsed = raw.map(parseSaleHistory);
+  if (parsed.some((sale) => sale === null)) {
+    throw new Error(getSupabaseErrorMessage(
+      new Error('Sales history returned an invalid response.'),
+      fallbackMessage,
+    ));
+  }
+  return parsed.filter((sale): sale is CompletedSale => sale !== null);
+}
+
+export async function loadSalesHistory(limit = 100): Promise<CompletedSale[]> {
+  if (isDesktopMode()) {
+    const rows = await localApiRequest<unknown>(`/api/reports/sales?limit=${encodeURIComponent(String(limit))}`);
+    if (!Array.isArray(rows)) throw new Error('The local sales history service returned an invalid response.');
+    return parseSalesHistoryRows(rows);
+  }
+  const raw = await callSupabaseRpc(
+    'sales_history_with_payment_details',
+    { p_limit: limit },
+    'Could not load sales history.',
+    (value): value is unknown[] => Array.isArray(value),
+  );
+  return parseSalesHistoryRows(raw);
+}
+
+export async function loadSalesHistoryRange(
+  from: Date,
+  toExclusive: Date,
+): Promise<CompletedSale[]> {
+  if (
+    Number.isNaN(from.getTime())
+    || Number.isNaN(toExclusive.getTime())
+    || from >= toExclusive
+  ) {
+    throw new RangeError('Choose a valid sales date range.');
+  }
+
+  if (isDesktopMode()) {
+    const query = new URLSearchParams({
+      from: from.toISOString(),
+      to: toExclusive.toISOString(),
+      limit: '1000',
+    });
+    const rows = await localApiRequest<unknown>(`/api/reports/sales?${query.toString()}`);
+    if (!Array.isArray(rows)) throw new Error('The local sales history service returned an invalid response.');
+    return parseSalesHistoryRows(rows, 'Could not load sales for the selected date range.');
+  }
+
+  const raw = await callSupabaseRpc(
+    'sales_history_range_with_payment_details',
+    {
+      p_from: from.toISOString(),
+      p_to_exclusive: toExclusive.toISOString(),
+    },
+    'Could not load sales for the selected date range.',
+    (value): value is unknown[] => Array.isArray(value),
+  );
+  return parseSalesHistoryRows(raw, 'Could not load sales for the selected date range.');
+}
+
+export async function loadSalesProfitSummary(
+  from: Date,
+  toExclusive: Date,
+): Promise<SalesProfitSummary> {
+  if (
+    Number.isNaN(from.getTime())
+    || Number.isNaN(toExclusive.getTime())
+    || from >= toExclusive
+  ) {
+    throw new RangeError('Choose a valid profit-summary date range.');
+  }
+  if (isDesktopMode()) {
+    const query = new URLSearchParams({ from: from.toISOString(), to: toExclusive.toISOString() });
+    return callLocalApi(`/api/reports/profit-summary?${query.toString()}`, isSalesProfitSummary);
+  }
+  return callSupabaseRpc(
+    'reports_sales_profit_summary',
+    {
+      p_from: from.toISOString(),
+      p_to_exclusive: toExclusive.toISOString(),
+    },
+    'Could not load the secure profit summary. Apply the owner-reviewed Reports SQL package, then retry.',
+    isSalesProfitSummary,
+  );
+}

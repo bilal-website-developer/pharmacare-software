@@ -1,0 +1,1847 @@
+import React, { Component, lazy, Suspense, useState, useEffect } from 'react';
+import {
+  Customer,
+  CashTransaction,
+  CompletedSale,
+  PaymentMethod,
+  LedgerEntry,
+  ROLE_LABELS,
+  UserRole,
+} from './types/pharmacy';
+import {
+  isDemoDataLoadedLocally,
+  getDemoCustomers,
+  getDemoLedgerEntries,
+  getDemoSales,
+  getDemoTransactions,
+  getDemoProducts,
+  DEMO_DATA_CHANGED_EVENT,
+} from './data/demoDataManager';
+import {
+  loadCustomerAccountsSummary,
+  loadPosCustomers,
+  loadSalesHistory,
+  loadSalesHistoryRange,
+  loadSalesProfitSummary,
+  recordCustomerPayment,
+  saveCustomer,
+} from './data/sales';
+import {
+  loadCurrentShopSettings,
+  ShopOperationalSettings,
+  updateCurrentShopSettings,
+} from './data/shopSettings';
+import { updateCurrentShopProfile } from './data/shopProfile';
+import type { ShopProfileUpdate } from './data/shopProfile';
+import { Sidebar, NavItemKey } from './components/Sidebar';
+import { getSidebarPage, sidebarPageForRoute } from './components/sidebarPages';
+import { toggleSidebarFavorite } from './components/sidebarPinLogic';
+import { TopNav } from './components/TopNav';
+import { InstallAppPrompt } from './components/InstallAppPrompt';
+import { DashboardView } from './components/DashboardView';
+import { LoginView } from './components/LoginView';
+import { canAccessCustomerDisplay } from './utils/customerDisplay';
+import { filterSalesBetween } from './utils/salesReport';
+import type { ProductFilter } from './components/InventoryScreen';
+import { AuthSession, loadAuthSession } from './utils/auth';
+import { supabase } from './utils/supabase';
+import { desktopGetSession, desktopLogout, isDesktopMode } from './services/localApi';
+import {
+  canAccessPage,
+  canEditSettingsSection,
+  isAdminRole,
+  PermissionsProvider,
+  usePermissions,
+} from './permissions';
+import {
+  BillingPreferences,
+  BillingTemplate,
+  ReceiptFormat,
+  PharmacyMemoSettings,
+  readBillingPreferencesWithMigration,
+  saveBillingPreferences,
+} from './utils/receipt';
+import {
+  readPharmacyMemoSettings,
+  savePharmacyMemoSettings,
+} from './utils/storeSettings';
+import PharmaLogo from './components/PharmaLogo';
+import type { PrintReceiptHandler } from './utils/printWorkflow';
+import { STOCK_CHANGED_EVENT } from './utils/stockAlertsEvents';
+import {
+  loadSidebarPreferences,
+  saveSidebarPreferences,
+  visibleSidebarPageKeys,
+} from './data/sidebarPreferences';
+import {
+  BeforeInstallPromptEvent,
+  isInstallPromptDismissed,
+  rememberInstallPromptDismissed,
+} from './utils/installPrompt';
+import { parseDemoPreviewRole } from './utils/demoPreview';
+import {
+  clearDemoAccountEntry,
+  clearDemoAccountMarker,
+  clearRoleDemoSession,
+  consumeDemoAccountEntry,
+  markDemoAccountEntry,
+  readDemoAccountMarker,
+  ROLE_DEMO_ROLE_KEY,
+  writeDemoAccountMarker,
+} from './utils/roleDemoStorage';
+import { DemoReceiptsPage } from './components/DemoReceiptsPage';
+
+const PublicReceiptPage = lazy(() => import('./components/PublicReceiptPage').then(({ PublicReceiptPage: View }) => ({ default: View })));
+const POSBillingView = lazy(() => import('./components/POSBillingView').then(({ POSBillingView: View }) => ({ default: View })));
+const CustomerDisplayView = lazy(() => import('./components/CustomerDisplayView').then(({ CustomerDisplayView: View }) => ({ default: View })));
+const InventoryScreen = lazy(() => import('./components/InventoryScreen').then(({ InventoryScreen: View }) => ({ default: View })));
+const MasterDataView = lazy(() => import('./components/MasterDataView').then(({ MasterDataView: View }) => ({ default: View })));
+const WhatsAppRemindersView = lazy(() => import('./components/WhatsAppRemindersView').then(({ WhatsAppRemindersView: View }) => ({ default: View })));
+const CustomerLedgerScreen = lazy(() => import('./components/CustomerLedgerScreen').then(({ CustomerLedgerScreen: View }) => ({ default: View })));
+const SalesHistoryView = lazy(() => import('./components/SalesHistoryView').then(({ SalesHistoryView: View }) => ({ default: View })));
+const ReportsScreen = lazy(() => import('./components/ReportsScreen').then(({ ReportsScreen: View }) => ({ default: View })));
+const CashBookScreen = lazy(() => import('./components/CashBookScreen').then(({ CashBookScreen: View }) => ({ default: View })));
+const SettingsView = lazy(() => import('./components/SettingsView').then(({ SettingsView: View }) => ({ default: View })));
+const UserPreferencesPanel = lazy(() => import('./components/UserPreferencesPanel').then(({ UserPreferencesPanel: View }) => ({ default: View })));
+const SuppliersView = lazy(() => import('./components/SuppliersView').then(({ SuppliersView: View }) => ({ default: View })));
+const StockPurchaseView = lazy(() => import('./components/StockPurchaseView').then(({ StockPurchaseView: View }) => ({ default: View })));
+const PurchaseHistoryView = lazy(() => import('./components/PurchaseHistoryView').then(({ PurchaseHistoryView: View }) => ({ default: View })));
+const HelpSupportView = lazy(() => import('./components/HelpSupportView').then(({ HelpSupportView: View }) => ({ default: View })));
+const TrashBinView = lazy(() => import('./components/TrashBinView').then(({ TrashBinView: View }) => ({ default: View })));
+const ManageUsersView = lazy(() => import('./components/ManageUsersView').then(({ ManageUsersView: View }) => ({ default: View })));
+const ShopsView = lazy(() => import('./components/ShopsView').then(({ ShopsView: View }) => ({ default: View })));
+const MyPrintRequestsView = lazy(() => import('./components/MyPrintRequestsView').then(({ MyPrintRequestsView: View }) => ({ default: View })));
+const PrintRequestsAdminView = lazy(() => import('./components/PrintRequestsAdminView').then(({ PrintRequestsAdminView: View }) => ({ default: View })));
+const DemoRolePreview = lazy(() => import('./components/DemoRolePreview').then(({ DemoRolePreview: View }) => ({ default: View })));
+const DemoWorkspace = lazy(() => import('./components/DemoWorkspace').then(({ DemoWorkspace: View }) => ({ default: View })));
+const TemplatePreviewModal = lazy(() => import('./components/TemplatePreviewModal').then(({ TemplatePreviewModal: View }) => ({ default: View })));
+const EndOfDayModal = lazy(() => import('./components/EndOfDayModal').then(({ EndOfDayModal: View }) => ({ default: View })));
+
+function routeToNavItem(pathname: string): NavItemKey | null {
+  return sidebarPageForRoute(pathname)?.key ?? null;
+}
+
+function clearDemoAccountBrowserState(): string | null {
+  const warnings: string[] = [];
+  try {
+    const warning = clearDemoAccountMarker(window.localStorage);
+    if (warning) warnings.push(warning);
+  } catch (error) {
+    warnings.push(`The saved demo account link could not be cleared. ${error instanceof Error ? error.message : ''}`.trim());
+  }
+  try {
+    const warning = clearDemoAccountEntry(window.sessionStorage);
+    if (warning) warnings.push(warning);
+  } catch (error) {
+    warnings.push(`The saved demo account entry could not be cleared. ${error instanceof Error ? error.message : ''}`.trim());
+  }
+  return warnings.length ? warnings.join(' ') : null;
+}
+
+interface WorkspaceSession extends AuthSession {
+  sidebarPreferences: Awaited<ReturnType<typeof loadSidebarPreferences>>;
+}
+
+async function loadWorkspaceSession(userId: string, email?: string): Promise<WorkspaceSession> {
+  const profile = await loadAuthSession(userId, email);
+  const visiblePageKeys = visibleSidebarPageKeys(profile.role, profile.permissions);
+  const sidebarPreferences = await loadSidebarPreferences(visiblePageKeys);
+  return { ...profile, sidebarPreferences };
+}
+
+async function loadDesktopWorkspaceSession(): Promise<WorkspaceSession | null> {
+  const localSession = await desktopGetSession();
+  if (!localSession) return null;
+  const { user } = localSession;
+  if (!Object.values(UserRole).includes(user.role as UserRole)) {
+    throw new Error('The local account has an unsupported role.');
+  }
+  const role = user.role as UserRole;
+  const visiblePageKeys = visibleSidebarPageKeys(role, user.permissions);
+  return {
+    userId: user.id,
+    displayName: user.fullName || user.username,
+    email: user.email || '',
+    role,
+    permissions: user.permissions,
+    shopProfile: localSession.shopProfile,
+    sidebarPreferences: await loadSidebarPreferences(visiblePageKeys),
+  };
+}
+
+export default function App() {
+  const [session, setSession] = useState<WorkspaceSession | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
+  const [authMessage, setAuthMessage] = useState('');
+  const [demoAccountLoginRole, setDemoAccountLoginRole] = useState<UserRole | null>(null);
+  const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
+  const [installPromptDismissed, setInstallPromptDismissed] = useState(isInstallPromptDismissed);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      if (!isInstallPromptDismissed()) setInstallPromptEvent(event as BeforeInstallPromptEvent);
+    };
+    const handleAppInstalled = () => {
+      setInstallPromptEvent(null);
+      setInstallPromptDismissed(true);
+      if (!rememberInstallPromptDismissed()) {
+        console.error('Could not persist the installed-app state in browser storage.');
+      }
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  const dismissInstallPrompt = () => {
+    setInstallPromptEvent(null);
+    setInstallPromptDismissed(true);
+    if (!rememberInstallPromptDismissed()) {
+      console.error('Could not persist the install-prompt dismissal in browser storage.');
+    }
+  };
+
+  useEffect(() => {
+    if (isDesktopMode()) {
+      let disposed = false;
+      void loadDesktopWorkspaceSession()
+        .then((profile) => {
+          if (!disposed) setSession(profile);
+        })
+        .catch((error) => {
+          if (!disposed) {
+            setSession(null);
+            setAuthMessage(error instanceof Error ? error.message : 'Could not restore your local session.');
+          }
+        })
+        .finally(() => {
+          if (!disposed) setSessionChecked(true);
+        });
+      return () => {
+        disposed = true;
+      };
+    }
+    const client = supabase;
+    if (!client) {
+      setSessionChecked(true);
+      return;
+    }
+    let disposed = false;
+    const restoreSession = async () => {
+      try {
+        const { data: authData, error: authError } = await client.auth.getSession();
+        if (authError) throw authError;
+        if (!authData.session) {
+          if (!disposed) {
+            const warning = clearDemoAccountBrowserState();
+            if (warning) console.error(warning);
+            setSession(null);
+          }
+          return;
+        }
+        const { data: userData, error: userError } = await client.auth.getUser();
+        if (userError) throw userError;
+        if (!userData.user) throw new Error('Your session is no longer valid. Sign in again.');
+        const profile = await loadWorkspaceSession(userData.user.id, userData.user.email);
+        if (!disposed) setSession(profile);
+      } catch (error) {
+        if (!disposed) {
+          setSession(null);
+          setAuthMessage(error instanceof Error ? error.message : 'Could not restore your session.');
+        }
+      } finally {
+        if (!disposed) setSessionChecked(true);
+      }
+    };
+    void restoreSession();
+    const { data: authListener } = client.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT' && !disposed) {
+        const warning = clearDemoAccountBrowserState();
+        if (warning) console.error(warning);
+        setSession(null);
+        setSessionChecked(true);
+      }
+    });
+    return () => {
+      disposed = true;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
+    const refreshProfile = async () => {
+      try {
+        if (isDesktopMode()) {
+          const updated = await loadDesktopWorkspaceSession();
+          if (!updated) throw new Error('Your local session has expired. Sign in again.');
+          setSession((current) => current
+            ? { ...updated, sidebarPreferences: current.sidebarPreferences }
+            : null);
+          setAuthMessage('');
+          return;
+        }
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const { data, error } = await supabase.auth.getUser();
+        if (error) throw error;
+        if (!data.user) throw new Error('Your session is no longer valid. Sign in again.');
+        const updated = await loadAuthSession(data.user.id, data.user.email);
+        setSession((current) => current
+          ? { ...updated, sidebarPreferences: current.sidebarPreferences }
+          : null);
+        setAuthMessage('');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not verify your account.';
+        setAuthMessage(message);
+        if (
+          (error instanceof Error && error.name === 'ProfileLoadError') ||
+          message.startsWith('Your account is disabled') ||
+          message.startsWith('No profile exists') ||
+          message.startsWith('Your profile has an invalid role') ||
+          message.startsWith('Your session is no longer valid') ||
+          message.startsWith('Your local session has expired') ||
+          message.startsWith('This shop is no longer accessible')
+        ) {
+          setSession(null);
+          if (isDesktopMode()) await desktopLogout();
+          else await supabase?.auth.signOut();
+        }
+      }
+    };
+    const intervalId = window.setInterval(() => void refreshProfile(), 2 * 60 * 1000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [session?.userId]);
+
+  useEffect(() => {
+    if (!session) return;
+    let timeoutId: number;
+    const expireSession = () => {
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(() => {
+        void (async () => {
+          if (isDesktopMode()) {
+            try {
+              await desktopLogout();
+              setSession(null);
+              window.history.replaceState({}, '', '/login');
+            } catch {
+              window.alert('Could not end the inactive local session. Please contact your administrator.');
+              expireSession();
+            }
+            return;
+          }
+          const { error } = await supabase?.auth.signOut() ?? { error: new Error('Supabase is not configured.') };
+          if (error) {
+            window.alert('Could not end the inactive session. Please contact your administrator.');
+            expireSession();
+            return;
+          }
+          setSession(null);
+          window.history.replaceState({}, '', '/login');
+        })();
+      }, 30 * 60 * 1000);
+    };
+    const activityEvents: Array<keyof WindowEventMap> = ['pointerdown', 'keydown', 'mousemove', 'touchstart'];
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, expireSession));
+    expireSession();
+    return () => {
+      window.clearTimeout(timeoutId);
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, expireSession));
+    };
+  }, [session?.userId]);
+
+  const handleLogin = async (userId: string, email: string) => {
+    setAuthMessage('');
+    try {
+      if (isDesktopMode()) {
+        const authenticatedSession = await loadDesktopWorkspaceSession();
+        if (!authenticatedSession) throw new Error('Local sign-in did not create an authenticated session.');
+        setSession(authenticatedSession);
+        window.history.replaceState({}, '', '/');
+        return;
+      }
+      const authenticatedSession = await loadWorkspaceSession(userId, email);
+      const warning = clearDemoAccountBrowserState();
+      setSession(authenticatedSession);
+      if (warning) setAuthMessage(warning);
+      window.history.replaceState({}, '', '/');
+    } catch (error) {
+      if (isDesktopMode()) await desktopLogout();
+      else await supabase?.auth.signOut();
+      throw error;
+    }
+  };
+
+  const handleDemoAccountLogin = async (
+    userId: string,
+    email: string,
+    selectedRole: UserRole,
+  ) => {
+    setAuthMessage('');
+    try {
+      const authenticatedSession = await loadWorkspaceSession(userId, email);
+      const notices: string[] = [];
+      if (authenticatedSession.role === UserRole.SUPER_ADMIN) {
+        notices.push('This sign-in belongs to a Super Admin, not a demo-shop account. The signed-in account role remains in effect.');
+      } else {
+        try {
+          const markerWarning = writeDemoAccountMarker(window.localStorage, {
+            userId: authenticatedSession.userId,
+            role: authenticatedSession.role,
+          });
+          if (markerWarning) notices.push(markerWarning);
+          const entryWarning = markDemoAccountEntry(window.sessionStorage, authenticatedSession.userId);
+          if (entryWarning) notices.push(entryWarning);
+        } catch (error) {
+          notices.push(`Demo account session details could not be saved. ${error instanceof Error ? error.message : ''}`.trim());
+        }
+      }
+      if (authenticatedSession.role !== selectedRole) {
+        notices.push(`This login is assigned the ${ROLE_LABELS[authenticatedSession.role]} role; the account's assigned permissions remain in effect.`);
+      }
+      setAuthMessage(notices.join(' '));
+      setSession(authenticatedSession);
+      setDemoAccountLoginRole(null);
+      window.history.replaceState({}, '', '/');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not verify the demo account.';
+      const { error: signOutError } = await supabase?.auth.signOut()
+        ?? { error: new Error('Supabase is not configured.') };
+      if (signOutError) {
+        console.error('Could not clear the unverified demo account session:', signOutError);
+      }
+      setSession(null);
+      setAuthMessage(message);
+      throw error;
+    }
+  };
+
+  const handleLogout = async () => {
+    if (isDesktopMode()) {
+      try {
+        await desktopLogout();
+      } catch (error) {
+        window.alert(`Could not end the local session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        return;
+      }
+      setSession(null);
+      window.history.replaceState({}, '', '/login');
+      return;
+    }
+    if (!supabase) return;
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      window.alert(`Could not end the session: ${error.message}`);
+      return;
+    }
+    const warning = clearDemoAccountBrowserState();
+    if (warning) console.error(warning);
+    setSession(null);
+    window.history.replaceState({}, '', '/login');
+  };
+
+  const receiptRoute = window.location.pathname.match(/^\/r\/([A-Za-z0-9_-]{22,128})\/?$/);
+  if (window.location.pathname === '/r' || window.location.pathname.startsWith('/r/')) {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-surface" />}>
+        <PublicReceiptPage token={receiptRoute?.[1] ?? null} />
+      </Suspense>
+    );
+  }
+  if (window.location.pathname.replace(/\/+$/, '') === '/demo/receipts') {
+    return <DemoReceiptsPage />;
+  }
+
+  if (!sessionChecked) {
+    return <div className="app-loading flex min-h-screen items-center justify-center bg-surface"><PharmaLogo size={12} /></div>;
+  }
+
+  if (window.location.pathname === '/customer-display') {
+    if (!session || !canAccessCustomerDisplay(session.role, session.permissions)) {
+      return (
+        <main className="flex min-h-screen items-center justify-center bg-surface p-6 text-text">
+          <section role="status" className="rounded-card border border-border bg-white p-7 text-center shadow-lg">
+            <h1 className="text-lg font-bold">Customer display unavailable</h1>
+            <p className="mt-2 text-sm text-muted">Open the display from a signed-in account with POS access.</p>
+          </section>
+        </main>
+      );
+    }
+    return (
+      <AppErrorBoundary>
+        <Suspense fallback={<ScreenLoading />}>
+          <CustomerDisplayView />
+        </Suspense>
+      </AppErrorBoundary>
+    );
+  }
+
+  if (demoAccountLoginRole) {
+    return (
+      <LoginView
+        heading={`Sign in to Demo ${ROLE_LABELS[demoAccountLoginRole]}`}
+        subtitle="Use an account from your dedicated demo shop. This device keeps the Supabase session for quick re-entry; your password is not saved."
+        onLogin={(userId, email) => handleDemoAccountLogin(userId, email, demoAccountLoginRole)}
+        onCancel={() => {
+          setDemoAccountLoginRole(null);
+          setAuthMessage('');
+        }}
+        cancelLabel="Back to Demo Hub"
+        initialError={authMessage}
+      />
+    );
+  }
+
+  if (!session) {
+    if (window.location.pathname !== '/login') window.history.replaceState({}, '', '/login');
+    return (
+      <LoginView
+        onLogin={handleLogin}
+        initialError={authMessage}
+      />
+    );
+  }
+
+  return (
+    <>
+      <AppErrorBoundary>
+        <PharmacyApp
+          key={session.userId}
+          session={session}
+          onLogout={handleLogout}
+          onRequestDemoAccountLogin={(role) => {
+            setAuthMessage('');
+            setDemoAccountLoginRole(role);
+          }}
+          authMessage={authMessage}
+          onShopProfileChange={(shopProfile) => {
+            setSession((current) => current
+              ? { ...current, shopProfile }
+              : current);
+          }}
+        />
+      </AppErrorBoundary>
+      {installPromptEvent && !installPromptDismissed && (
+        <InstallAppPrompt promptEvent={installPromptEvent} onDismiss={dismissInstallPrompt} />
+      )}
+    </>
+  );
+}
+
+function PharmacyApp({
+  session,
+  onLogout,
+  onRequestDemoAccountLogin,
+  authMessage,
+  onShopProfileChange,
+}: {
+  session: WorkspaceSession;
+  onLogout: () => void;
+  onRequestDemoAccountLogin: (role: UserRole) => void;
+  authMessage: string;
+  onShopProfileChange: (shopProfile: AuthSession['shopProfile']) => void;
+}) {
+  const [demoRole, setDemoRole] = useState<UserRole | null>(() => {
+    if (session.role !== UserRole.SUPER_ADMIN) return null;
+    try {
+      return parseDemoPreviewRole(window.sessionStorage.getItem(ROLE_DEMO_ROLE_KEY));
+    } catch (error) {
+      console.warn('Could not restore the Role Demo session:', error);
+      return null;
+    }
+  });
+  const [demoAccountState] = useState(() => {
+    try {
+      return readDemoAccountMarker(window.localStorage);
+    } catch (error) {
+      return {
+        marker: null,
+        warning: `Saved demo account details could not be read. ${error instanceof Error ? error.message : ''}`.trim(),
+      };
+    }
+  });
+  const savedDemoAccount = demoAccountState.marker?.userId === session.userId
+    && demoAccountState.marker.role === session.role
+    ? demoAccountState.marker
+    : null;
+  const [demoAccountNotice, setDemoAccountNotice] = useState(demoAccountState.warning ?? '');
+  const [demoAccountRouteReady, setDemoAccountRouteReady] = useState(!savedDemoAccount);
+  const [showDemoHub, setShowDemoHub] = useState(false);
+  const [demoAccountLoginRole, setDemoAccountLoginRole] = useState<UserRole | null>(null);
+
+  useEffect(() => {
+    if (session.role === UserRole.SUPER_ADMIN) return;
+    try {
+      const warning = clearRoleDemoSession(window.sessionStorage);
+      if (warning) console.error(warning);
+    } catch (error) {
+      console.error('Could not clear the stale Role Demo session:', error);
+    }
+  }, [session.role]);
+
+  useEffect(() => {
+    if (!savedDemoAccount) {
+      if (demoAccountState.marker) {
+        const warning = clearDemoAccountBrowserState();
+        if (warning) setDemoAccountNotice(warning);
+      }
+      setShowDemoHub(false);
+      setDemoAccountRouteReady(true);
+      return;
+    }
+    try {
+      const result = consumeDemoAccountEntry(window.sessionStorage, session.userId);
+      if (result.warning) setDemoAccountNotice(result.warning);
+      setShowDemoHub(!result.shouldEnter);
+    } catch (error) {
+      setDemoAccountNotice(`The saved demo account entry could not be restored. ${error instanceof Error ? error.message : ''}`.trim());
+      setShowDemoHub(true);
+    }
+    setDemoAccountRouteReady(true);
+  }, [demoAccountState.marker, savedDemoAccount, session.userId]);
+
+  const exitDemo = () => {
+    try {
+      const warning = clearRoleDemoSession(window.sessionStorage);
+      if (warning) console.error(warning);
+    } catch (error) {
+      console.error('Could not clear the Role Demo session:', error);
+    }
+    setDemoRole(null);
+    window.history.replaceState({}, '', '/');
+  };
+
+  const openDemo = (role: UserRole) => {
+    if (session.role !== UserRole.SUPER_ADMIN) return;
+    setDemoRole(role);
+  };
+
+  const openDemoAccount = (role: UserRole) => {
+    if (role === UserRole.SUPER_ADMIN) return;
+    if (session.role !== UserRole.SUPER_ADMIN && !savedDemoAccount) return;
+    setDemoAccountNotice('');
+    if (savedDemoAccount && session.role === role) {
+      setShowDemoHub(false);
+      return;
+    }
+    onRequestDemoAccountLogin(role);
+  };
+
+  if (demoRole) {
+    return (
+      <Suspense fallback={<ScreenLoading />}>
+        <DemoWorkspace role={demoRole} onSignOut={exitDemo} />
+      </Suspense>
+    );
+  }
+
+  if (!demoAccountRouteReady) {
+    return <div className="app-loading flex min-h-screen items-center justify-center bg-surface"><PharmaLogo size={12} /></div>;
+  }
+
+  if (savedDemoAccount && showDemoHub) {
+    return (
+      <Suspense fallback={<ScreenLoading />}>
+        <main className="min-h-screen bg-surface px-4 py-6 font-inter text-text sm:px-8 sm:py-10">
+          <DemoRolePreview
+            onOpenDemoAccount={openDemoAccount}
+            savedDemoAccount={{ role: session.role, email: session.email }}
+            notice={demoAccountNotice}
+            onSignOut={onLogout}
+          />
+        </main>
+      </Suspense>
+    );
+  }
+
+  return (
+    <PermissionsProvider role={session.role} permissions={session.permissions}>
+      <PharmacyWorkspace
+        session={session}
+        onLogout={savedDemoAccount ? () => setShowDemoHub(true) : onLogout}
+        logoutLabel={savedDemoAccount ? 'Return to Demo Hub' : undefined}
+        authMessage={authMessage}
+        onOpenDemo={openDemo}
+        onOpenDemoAccount={openDemoAccount}
+        savedDemoAccount={savedDemoAccount
+          ? { role: session.role, email: session.email }
+          : undefined}
+        demoAccountNotice={demoAccountNotice}
+        onShopProfileChange={onShopProfileChange}
+      />
+    </PermissionsProvider>
+  );
+}
+
+function PharmacyWorkspace({
+  session,
+  onLogout,
+  logoutLabel,
+  authMessage,
+  onOpenDemo,
+  onOpenDemoAccount,
+  savedDemoAccount,
+  demoAccountNotice,
+  onShopProfileChange,
+}: {
+  session: WorkspaceSession;
+  onLogout: () => void;
+  logoutLabel?: string;
+  authMessage: string;
+  onOpenDemo: (role: UserRole) => void;
+  onOpenDemoAccount: (role: UserRole) => void;
+  savedDemoAccount?: { role: UserRole; email: string };
+  demoAccountNotice: string;
+  onShopProfileChange: (shopProfile: AuthSession['shopProfile']) => void;
+}) {
+  const { can, canPage } = usePermissions();
+  const visibleSidebarKeys = React.useMemo(
+    () => visibleSidebarPageKeys(session.role, session.permissions),
+    [session.role, session.permissions],
+  );
+  const visibleSidebarKeySet = React.useMemo(() => new Set(visibleSidebarKeys), [visibleSidebarKeys]);
+  const [favoritePageKeys, setFavoritePageKeys] = useState<NavItemKey[]>(session.sidebarPreferences.favoritePageKeys);
+  const [tipDismissed, setTipDismissed] = useState(session.sidebarPreferences.tipDismissed);
+  const [sidebarPreferencesLoadFailed, setSidebarPreferencesLoadFailed] = useState(session.sidebarPreferences.loadFailed);
+  const [sidebarPreferenceNotice, setSidebarPreferenceNotice] = useState('');
+  const favoritePageKeysRef = React.useRef(favoritePageKeys);
+  const tipDismissedRef = React.useRef(tipDismissed);
+  const confirmedSidebarPreferences = React.useRef({ favoritePageKeys, tipDismissed });
+  const sidebarSaveQueue = React.useRef<Promise<void>>(Promise.resolve());
+  const sidebarSaveVersion = React.useRef(0);
+
+  const saveSidebarState = React.useCallback((nextKeys: NavItemKey[], nextTipDismissed: boolean) => {
+    const snapshot = { favoritePageKeys: [...nextKeys], tipDismissed: nextTipDismissed };
+    favoritePageKeysRef.current = snapshot.favoritePageKeys;
+    tipDismissedRef.current = snapshot.tipDismissed;
+    setFavoritePageKeys(snapshot.favoritePageKeys);
+    setTipDismissed(snapshot.tipDismissed);
+    const version = ++sidebarSaveVersion.current;
+
+    sidebarSaveQueue.current = sidebarSaveQueue.current
+      .catch(() => undefined)
+      .then(async () => {
+        await saveSidebarPreferences(snapshot.favoritePageKeys, snapshot.tipDismissed);
+        confirmedSidebarPreferences.current = snapshot;
+        setSidebarPreferencesLoadFailed(false);
+      })
+      .catch((error: unknown) => {
+        console.warn('Could not save sidebar preferences:', error);
+        if (version !== sidebarSaveVersion.current) return;
+        const confirmed = confirmedSidebarPreferences.current;
+        favoritePageKeysRef.current = confirmed.favoritePageKeys;
+        tipDismissedRef.current = confirmed.tipDismissed;
+        setFavoritePageKeys(confirmed.favoritePageKeys);
+        setTipDismissed(confirmed.tipDismissed);
+        setSidebarPreferenceNotice('Could not save sidebar changes. Your previous settings were restored.');
+      });
+  }, []);
+
+  const toggleFavoritePage = React.useCallback((key: NavItemKey) => {
+    if (!visibleSidebarKeySet.has(key)) return;
+    const update = toggleSidebarFavorite(favoritePageKeysRef.current, key);
+    if (update.limitReached) return;
+    saveSidebarState(update.pageKeys, tipDismissedRef.current || update.pageKeys.length > 0);
+  }, [saveSidebarState, visibleSidebarKeySet]);
+
+  const dismissSidebarTip = React.useCallback(() => {
+    if (!tipDismissedRef.current) {
+      saveSidebarState(favoritePageKeysRef.current, true);
+    }
+  }, [saveSidebarState]);
+
+  React.useEffect(() => {
+    const visible = favoritePageKeysRef.current.filter((key) => visibleSidebarKeySet.has(key));
+    if (visible.length !== favoritePageKeysRef.current.length) {
+      saveSidebarState(visible, tipDismissedRef.current);
+    }
+  }, [saveSidebarState, visibleSidebarKeySet]);
+
+  React.useEffect(() => {
+    if (!sidebarPreferencesLoadFailed) return;
+    let active = true;
+    const retry = async () => {
+      const version = sidebarSaveVersion.current;
+      const preferences = await loadSidebarPreferences(visibleSidebarKeys);
+      if (!active || preferences.loadFailed || version !== sidebarSaveVersion.current) return;
+      favoritePageKeysRef.current = preferences.favoritePageKeys;
+      tipDismissedRef.current = preferences.tipDismissed;
+      confirmedSidebarPreferences.current = {
+        favoritePageKeys: preferences.favoritePageKeys,
+        tipDismissed: preferences.tipDismissed,
+      };
+      setFavoritePageKeys(preferences.favoritePageKeys);
+      setTipDismissed(preferences.tipDismissed);
+      setSidebarPreferencesLoadFailed(false);
+    };
+    void retry();
+    const interval = window.setInterval(() => { void retry(); }, 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [sidebarPreferencesLoadFailed, visibleSidebarKeys]);
+
+  React.useEffect(() => {
+    if (!sidebarPreferenceNotice) return;
+    const timeout = window.setTimeout(() => setSidebarPreferenceNotice(''), 4500);
+    return () => window.clearTimeout(timeout);
+  }, [sidebarPreferenceNotice]);
+
+  const initialPath = window.location.pathname;
+  const [activeItem, setActiveItem] = useState<NavItemKey>(
+    routeToNavItem(initialPath) ?? 'dashboard'
+  );
+  const [addProductRequest, setAddProductRequest] = useState(0);
+  const [handledAddProductRequest, setHandledAddProductRequest] = useState(0);
+  const [isPageNotFound, setIsPageNotFound] = useState(
+    initialPath !== '/' && initialPath !== '/login' && routeToNavItem(initialPath) === null
+  );
+  const [accessMessage, setAccessMessage] = useState('');
+  const [printNotice, setPrintNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const [pendingPrintCount, setPendingPrintCount] = useState(0);
+
+  const currentRole = session.role;
+  const currentUserName = session.displayName;
+  const handlePrintReceipt: PrintReceiptHandler = React.useCallback(
+    async (type, payload, options) => {
+      const { printReceipt } = await import('./utils/printWorkflow');
+      return printReceipt(type, payload, {
+        role: currentRole,
+        permissions: session.permissions,
+        onNotice: (text, error = false) => setPrintNotice({ text, error }),
+      }, options);
+    },
+    [currentRole, session.permissions],
+  );
+
+  React.useEffect(() => {
+    if (!canAccessPage(currentRole, session.permissions, 'print-requests')) {
+      setPendingPrintCount(0);
+      return;
+    }
+    let disposed = false;
+    let failureReported = false;
+    const refreshCount = async () => {
+      if (!supabase) {
+        if (!failureReported && !disposed) {
+          setPrintNotice({ text: 'Supabase is not configured; print request counts are unavailable.', error: true });
+          failureReported = true;
+        }
+        return;
+      }
+      const { data, error } = await supabase.rpc('pending_print_count');
+      if (disposed) return;
+      if (error) {
+        if (!failureReported) setPrintNotice({ text: `Could not refresh pending print requests: ${error.message}`, error: true });
+        failureReported = true;
+      } else if (typeof data === 'number' && Number.isFinite(data)) {
+        failureReported = false;
+        setPendingPrintCount(data);
+      } else {
+        setPrintNotice({ text: 'The server returned an invalid pending print count.', error: true });
+      }
+    };
+    void refreshCount();
+    const interval = window.setInterval(() => { void refreshCount(); }, 20_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [currentRole, session.permissions]);
+
+  React.useEffect(() => {
+    if (!printNotice) return;
+    const timeout = window.setTimeout(() => setPrintNotice(null), printNotice.error ? 9000 : 4500);
+    return () => window.clearTimeout(timeout);
+  }, [printNotice]);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(`pharma-care.sidebarCollapsed.${session.displayName}`) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [billingState] = useState(readBillingPreferencesWithMigration);
+  const [billingPreferences, setBillingPreferences] = useState<BillingPreferences>(billingState.preferences);
+  const [previewTemplate, setPreviewTemplate] = useState<BillingTemplate>(
+    billingPreferences.template
+  );
+  const shopIdentity = session.shopProfile;
+  const [companyName, setCompanyName] = useState(shopIdentity?.name || 'Pharma Care');
+  useEffect(() => {
+    setCompanyName(shopIdentity?.name || 'Pharma Care');
+  }, [shopIdentity?.name]);
+  const withShopIdentity = (settings: PharmacyMemoSettings): PharmacyMemoSettings => shopIdentity
+    ? {
+      ...settings,
+      storeName: shopIdentity.name,
+      address: shopIdentity.address,
+      phone: shopIdentity.phone,
+      logoUrl: shopIdentity.logoPath,
+    }
+    : settings;
+  const [memoSettings, setMemoSettings] = useState<PharmacyMemoSettings>(() =>
+    withShopIdentity(readPharmacyMemoSettings(companyName))
+  );
+  useEffect(() => {
+    if (shopIdentity) {
+      setMemoSettings((current) => withShopIdentity(current));
+    }
+  }, [shopIdentity?.address, shopIdentity?.logoPath, shopIdentity?.name, shopIdentity?.phone]);
+  const [shopSettings, setShopSettings] = useState<ShopOperationalSettings | null>(null);
+  const shopSettingsRef = React.useRef<ShopOperationalSettings | null>(null);
+  const shopSettingsSaveQueue = React.useRef<Promise<void>>(Promise.resolve());
+  const [shopSettingsLoaded, setShopSettingsLoaded] = useState(false);
+  const [shopSettingsError, setShopSettingsError] = useState('');
+  const [memoMigrationToast, setMemoMigrationToast] = useState(billingState.migratedClassicDefault);
+
+  useEffect(() => {
+    let active = true;
+    shopSettingsRef.current = null;
+    setShopSettings(null);
+    setShopSettingsError('');
+
+    if (!supabase || session.role === UserRole.SUPER_ADMIN) {
+      setShopSettingsLoaded(true);
+      return () => {
+        active = false;
+      };
+    }
+
+    setShopSettingsLoaded(false);
+    void loadCurrentShopSettings()
+      .then((loadedSettings) => {
+        if (!active) return;
+        shopSettingsRef.current = loadedSettings;
+        setShopSettings(loadedSettings);
+        const nextBillingPreferences: BillingPreferences = {
+          template: loadedSettings.template,
+          format: loadedSettings.format,
+        };
+        setBillingPreferences(nextBillingPreferences);
+        const localBillingSaved = saveBillingPreferences(nextBillingPreferences);
+        const nextMemoSettings = withShopIdentity({
+          ...readPharmacyMemoSettings(),
+          ...loadedSettings.memo,
+        });
+        setMemoSettings(nextMemoSettings);
+        const localMemoSaved = savePharmacyMemoSettings(nextMemoSettings);
+        if (!localBillingSaved || !localMemoSaved) {
+          setShopSettingsError('Shop settings loaded from the server, but this browser could not refresh its local cache.');
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        const message = error instanceof Error ? error.message : 'Could not load shared shop settings.';
+        setShopSettingsError(message);
+      })
+      .finally(() => {
+        if (active) setShopSettingsLoaded(true);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [session.userId, session.role]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(`pharma-care.sidebarCollapsed.${currentUserName}`, String(sidebarCollapsed));
+    } catch {
+      // Keep the selected layout for this page view if browser storage is unavailable.
+    }
+  }, [currentUserName, sidebarCollapsed]);
+
+  useEffect(() => {
+    const syncRoute = () => {
+      const requested = routeToNavItem(window.location.pathname);
+      if (!requested) {
+        if (window.location.pathname === '/login') {
+          window.history.replaceState({}, '', '/');
+          setIsPageNotFound(false);
+          setActiveItem('dashboard');
+          return;
+        }
+        setIsPageNotFound(true);
+        setAccessMessage('');
+        return;
+      }
+      setIsPageNotFound(false);
+      if (!canPage(requested)) {
+        setAccessMessage('No access. Your account does not have permission to open that page.');
+        setActiveItem('dashboard');
+        window.history.replaceState({}, '', '/');
+        return;
+      }
+      setAccessMessage('');
+      setActiveItem(requested);
+    };
+    syncRoute();
+    window.addEventListener('popstate', syncRoute);
+    return () => window.removeEventListener('popstate', syncRoute);
+  }, [canPage]);
+
+  const navigateTo = React.useCallback((item: NavItemKey) => {
+    if (!canPage(item)) {
+      setAccessMessage('No access. Your account does not have permission to open that page.');
+      setActiveItem('dashboard');
+      window.history.replaceState({}, '', '/');
+      return;
+    }
+    setAccessMessage('');
+    setIsPageNotFound(false);
+    setActiveItem(item);
+    const page = getSidebarPage(item);
+    if (!page) {
+      setIsPageNotFound(true);
+      return;
+    }
+    window.history.pushState({}, '', page.route);
+  }, [canPage]);
+
+  const [productFilter, setProductFilter] = React.useState<ProductFilter>(null);
+  const [stockMedicineId, setStockMedicineId] = React.useState<string | null>(null);
+  const [stockInitialTab, setStockInitialTab] = React.useState<'all' | 'near-expiry' | 'expired' | 'low-stock'>('all');
+  const [stockNavigationKey, setStockNavigationKey] = React.useState(0);
+  const [alertProductSearch, setAlertProductSearch] = React.useState<string | null>(null);
+  const [alertProductsLowStockOnly, setAlertProductsLowStockOnly] = React.useState(false);
+  const [alertProductNavigationKey, setAlertProductNavigationKey] = React.useState(0);
+  const viewFilteredProducts = React.useCallback((filter: Exclude<ProductFilter, null>) => {
+    setProductFilter(filter);
+    navigateTo('products');
+  }, [navigateTo]);
+  const viewProductBatches = React.useCallback((medicineId: string | null, initialTab: 'all' | 'low-stock' = 'all') => {
+    setStockMedicineId(medicineId);
+    setStockInitialTab(initialTab);
+    setStockNavigationKey((current) => current + 1);
+    navigateTo('stock-inventory');
+  }, [navigateTo]);
+  const openStockAlertProducts = React.useCallback((searchText: string | null) => {
+    setProductFilter(null);
+    setAlertProductSearch(searchText);
+    setAlertProductsLowStockOnly(true);
+    setAlertProductNavigationKey((current) => current + 1);
+    navigateTo('products');
+  }, [navigateTo]);
+
+  useEffect(() => {
+    if (activeItem !== 'stock-inventory') {
+      setStockMedicineId(null);
+      setStockInitialTab('all');
+    }
+    if (activeItem !== 'products') {
+      setAlertProductSearch(null);
+      setAlertProductsLowStockOnly(false);
+    }
+  }, [activeItem]);
+
+  const [isDemoActive, setIsDemoActive] = useState(() => !supabase && isDemoDataLoadedLocally());
+
+  useEffect(() => {
+    const handleDemoChange = () => {
+      setIsDemoActive(!supabase && isDemoDataLoadedLocally());
+    };
+    window.addEventListener(DEMO_DATA_CHANGED_EVENT, handleDemoChange);
+    return () => window.removeEventListener(DEMO_DATA_CHANGED_EVENT, handleDemoChange);
+  }, []);
+
+  // Main Datasets
+  const products = isDemoActive ? getDemoProducts() : [];
+  const [customers, setCustomers] = useState<Customer[]>(() => (!supabase && isDemoDataLoadedLocally() ? getDemoCustomers() : []));
+  const [ledgerEntries, setLedgerEntries] = useState<Record<string, LedgerEntry[]>>(() => (!supabase && isDemoDataLoadedLocally() ? getDemoLedgerEntries() : {}));
+  const [transactions, setTransactions] = useState<CashTransaction[]>(() => (!supabase && isDemoDataLoadedLocally() ? getDemoTransactions() : []));
+  const [completedSales, setCompletedSales] = useState<CompletedSale[]>(() => (!supabase && isDemoDataLoadedLocally() ? getDemoSales() : []));
+  const [todayProfitPaisa, setTodayProfitPaisa] = useState<number | null>(null);
+  const [dataLoadError, setDataLoadError] = useState('');
+
+  useEffect(() => {
+    if (!session) {
+      setCustomers([]);
+      setLedgerEntries({});
+      setCompletedSales([]);
+      setTodayProfitPaisa(null);
+      setTransactions([]);
+      setDataLoadError('');
+      return;
+    }
+
+    let active = true;
+    setDataLoadError('');
+    const reportLoadError = (error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Could not load saved business data.';
+      if (active) setDataLoadError((previous) => previous ? `${previous} ${message}` : message);
+    };
+
+    if (session.permissions.includes('customers')) {
+      void loadCustomerAccountsSummary().then((accounts) => {
+        if (!active) return;
+        if (accounts.customers.length > 0) {
+          setCustomers(accounts.customers);
+          setLedgerEntries(accounts.ledgerEntries);
+        } else if (!supabase && isDemoDataLoadedLocally()) {
+          setCustomers(getDemoCustomers());
+          setLedgerEntries(getDemoLedgerEntries());
+        } else {
+          setCustomers([]);
+          setLedgerEntries({});
+        }
+      }).catch((err) => {
+        if (!supabase && isDemoDataLoadedLocally()) {
+          setCustomers(getDemoCustomers());
+          setLedgerEntries(getDemoLedgerEntries());
+        } else {
+          reportLoadError(err);
+        }
+      });
+    } else if (session.permissions.includes('pos')) {
+      void loadPosCustomers().then((loadedCustomers) => {
+        if (!active) return;
+        if (loadedCustomers.length > 0) {
+          setCustomers(loadedCustomers);
+        } else if (!supabase && isDemoDataLoadedLocally()) {
+          setCustomers(getDemoCustomers());
+        } else {
+          setCustomers([]);
+        }
+      }).catch((err) => {
+        if (!supabase && isDemoDataLoadedLocally()) {
+          setCustomers(getDemoCustomers());
+        } else {
+          reportLoadError(err);
+        }
+      });
+    } else {
+      setCustomers([]);
+      setLedgerEntries({});
+    }
+
+    if (session.permissions.includes('sales_history')) {
+      void loadSalesHistory().then((sales) => {
+        if (!active) return;
+        if (sales.length > 0) {
+          setCompletedSales(sales);
+        } else if (!supabase && isDemoDataLoadedLocally()) {
+          setCompletedSales(getDemoSales());
+        } else {
+          setCompletedSales([]);
+        }
+      }).catch((err) => {
+        if (!supabase && isDemoDataLoadedLocally()) {
+          setCompletedSales(getDemoSales());
+        } else {
+          reportLoadError(err);
+        }
+      });
+    } else {
+      setCompletedSales([]);
+    }
+
+    if (!supabase && isDemoDataLoadedLocally()) {
+      setTransactions((prev) => (prev.length > 0 ? prev : getDemoTransactions()));
+    } else {
+      setTransactions([]);
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [session?.userId, session?.permissions, isDemoActive]);
+
+  useEffect(() => {
+    if (!session
+      || !canPage('reports')
+      || (currentRole !== UserRole.ADMIN && currentRole !== UserRole.ACCOUNTANT)) {
+      setTodayProfitPaisa(null);
+    }
+  }, [canPage, currentRole, session]);
+
+  // Global Modals
+  const [showTemplatePreview, setShowTemplatePreview] = useState(false);
+  const [showCloseDayModal, setShowCloseDayModal] = useState(false);
+
+  useEffect(() => {
+    if (!memoMigrationToast) return;
+    const timeout = window.setTimeout(() => setMemoMigrationToast(false), 6000);
+    return () => window.clearTimeout(timeout);
+  }, [memoMigrationToast]);
+
+  const persistShopSettingsPatch = (patch: Partial<ShopOperationalSettings>) => {
+    const operation = shopSettingsSaveQueue.current
+      .catch(() => undefined)
+      .then(async () => {
+        const current = shopSettingsRef.current;
+        if (!current) {
+          throw new Error('Shared shop settings are not loaded. Refresh the page before trying again.');
+        }
+        const saved = await updateCurrentShopSettings({ ...current, ...patch });
+        shopSettingsRef.current = saved;
+        setShopSettings(saved);
+        const nextBillingPreferences: BillingPreferences = {
+          template: saved.template,
+          format: saved.format,
+        };
+        const nextMemoSettings = withShopIdentity({
+          ...readPharmacyMemoSettings(),
+          ...saved.memo,
+        });
+        const billingCached = saveBillingPreferences(nextBillingPreferences);
+        const memoCached = savePharmacyMemoSettings(nextMemoSettings);
+        setShopSettingsError(
+          billingCached && memoCached
+            ? ''
+            : 'Shop settings were saved on the server, but this browser could not refresh its local cache.',
+        );
+        return saved;
+      });
+    shopSettingsSaveQueue.current = operation.then(() => undefined, () => undefined);
+    return operation;
+  };
+
+  const updateBillingPreferences = (preferences: BillingPreferences) => {
+    if (supabase) {
+      void persistShopSettingsPatch({
+        template: preferences.template,
+        format: preferences.format,
+      }).then((saved) => {
+        setBillingPreferences({ template: saved.template, format: saved.format });
+      }).catch((error: unknown) => {
+        setShopSettingsError(error instanceof Error ? error.message : 'Could not save shared billing settings.');
+      });
+      return;
+    }
+
+    setBillingPreferences(preferences);
+    if (!saveBillingPreferences(preferences)) {
+      setShopSettingsError('Template preference could not be saved in this browser.');
+    }
+  };
+
+  const updateMemoSettings = async (settings: PharmacyMemoSettings): Promise<boolean> => {
+    if (supabase) {
+      try {
+        const saved = await persistShopSettingsPatch({
+          memo: {
+            notes: settings.notes,
+            terminalName: settings.terminalName,
+            showBatchNumber: settings.showBatchNumber,
+            showExpiryDate: settings.showExpiryDate,
+            roundNet: settings.roundNet,
+            printTax: settings.printTax,
+            duplicateLabel: settings.duplicateLabel,
+            autoPrint: settings.autoPrint,
+            numberDigits: settings.numberDigits,
+            printLogo: settings.printLogo !== false,
+          },
+        });
+        const nextSettings = { ...settings, ...saved.memo };
+        setMemoSettings(nextSettings);
+        if (!savePharmacyMemoSettings(nextSettings)) {
+          setShopSettingsError('Shop settings were saved on the server, but this browser could not refresh its local cache.');
+        }
+        return true;
+      } catch (error) {
+        setShopSettingsError(error instanceof Error ? error.message : 'Could not save shared Pharmacy Memo settings.');
+        return false;
+      }
+    }
+
+    if (!savePharmacyMemoSettings(settings)) return false;
+    setMemoSettings(settings);
+    return true;
+  };
+
+  const updateOperationalLimits = async (
+    limits: Pick<ShopOperationalSettings, 'maxDiscountPaisa' | 'roleDiscountPercentCap' | 'expiryWarningDays'>,
+  ): Promise<boolean> => {
+    try {
+      await persistShopSettingsPatch(limits);
+      return true;
+    } catch (error) {
+      setShopSettingsError(error instanceof Error ? error.message : 'Could not save operational limits.');
+      return false;
+    }
+  };
+
+  const openTemplatePreview = (template: BillingTemplate) => {
+    setPreviewTemplate(template);
+    setShowTemplatePreview(true);
+  };
+
+  // Keyboard shortcut F1 for POS Billing
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'F1') {
+        e.preventDefault();
+        navigateTo('pos');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const handleSaleComplete = (sale: CompletedSale) => {
+    setCompletedSales((prev) => [sale, ...prev]);
+    window.dispatchEvent(new CustomEvent(STOCK_CHANGED_EVENT));
+
+    if (sale.paymentMethod === PaymentMethod.CASH) {
+      const tx: CashTransaction = {
+        id: `tx-${Date.now()}`,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        type: 'SALE',
+        description: `POS Bill ${sale.invoiceNumber}`,
+        amountPaisa: sale.totalPaisa,
+        isOutflow: false,
+        handledBy: currentUserName,
+      };
+      setTransactions((prev) => [tx, ...prev]);
+    }
+
+    if (session?.permissions.includes('pos')) {
+      void loadPosCustomers().then(setCustomers).catch((error: unknown) => {
+        setDataLoadError(error instanceof Error ? error.message : 'Could not refresh POS customers.');
+      });
+    }
+    if (session?.permissions.includes('customers')) {
+      void loadCustomerAccountsSummary().then((accounts) => {
+        setCustomers(accounts.customers);
+        setLedgerEntries(accounts.ledgerEntries);
+      }).catch((error: unknown) => {
+        setDataLoadError(error instanceof Error ? error.message : 'Could not refresh customer accounts.');
+      });
+    }
+  };
+
+  const handleRecordPayment = async (customerId: string, amountPaisa: number, note: string) => {
+    const result = await recordCustomerPayment(customerId, amountPaisa, note);
+    const customer = customers.find((c) => c.id === customerId);
+    const tx: CashTransaction = {
+      id: `tx-${Date.now()}`,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      type: 'CREDIT_RECOVERY',
+      description: `Payment from ${customer?.name || 'Customer'}`,
+      amountPaisa,
+      isOutflow: false,
+      handledBy: currentUserName,
+    };
+    setTransactions((prev) => [tx, ...prev]);
+    if (session?.permissions.includes('customers')) {
+      void loadCustomerAccountsSummary().then((accounts) => {
+        setCustomers(accounts.customers);
+        setLedgerEntries(accounts.ledgerEntries);
+      }).catch((error: unknown) => {
+        setDataLoadError(error instanceof Error ? error.message : 'Payment was recorded, but accounts could not refresh.');
+      });
+    }
+    return result;
+  };
+
+  const handleAddCustomer = async (input: {
+    name: string;
+    phone: string;
+    cnic: string;
+    address: string;
+    creditLimitPaisa: number;
+  }): Promise<Customer> => {
+    const customer = await saveCustomer(input);
+    setCustomers((previous) => [...previous, customer]);
+    setLedgerEntries((previous) => ({ ...previous, [customer.id]: [] }));
+    return customer;
+  };
+
+  // Calculations for End of Day modal
+  const cashSalesPKR =
+    completedSales
+      .filter((s) => s.paymentMethod === 'CASH')
+      .reduce((sum, s) => sum + s.totalPaisa, 0) / 100;
+
+  const creditSalesPKR =
+    completedSales
+      .filter((s) => s.paymentMethod === 'CREDIT')
+      .reduce((sum, s) => sum + s.totalPaisa, 0) / 100;
+
+  const totalSalesPKR = completedSales.reduce((sum, s) => sum + s.totalPaisa, 0) / 100;
+
+  const expensesPKR =
+    transactions
+      .filter((t) => t.isOutflow)
+      .reduce((sum, t) => sum + t.amountPaisa, 0) / 100;
+
+  const grossProfitPKR = todayProfitPaisa === null ? null : todayProfitPaisa / 100;
+  const netCashInHandPKR = Math.max(0, cashSalesPKR - expensesPKR);
+  const loadProfitSummary = React.useCallback((from: Date, toExclusive: Date) => {
+    if (!supabase) {
+      return Promise.reject(new Error('Secure profit reporting requires a connected shop database.'));
+    }
+    return loadSalesProfitSummary(from, toExclusive);
+  }, []);
+  const loadTodayProfit = React.useCallback(
+    async (from: Date, toExclusive: Date) =>
+      (await loadProfitSummary(from, toExclusive)).grossProfitPaisa,
+    [loadProfitSummary],
+  );
+
+  const getPageTitle = (key: NavItemKey): string => {
+    switch (key) {
+      case 'dashboard':
+        return 'DASHBOARD';
+      case 'pos':
+        return 'POS BILLING';
+      case 'products':
+        return 'PRODUCTS';
+      case 'master-data':
+        return 'MASTER DATA';
+      case 'stock-inventory':
+        return 'STOCK INVENTORY';
+      case 'customers':
+        return 'CUSTOMERS';
+      case 'customer-ledger':
+        return 'CUSTOMER LEDGER';
+      case 'whatsapp-reminders':
+        return 'WHATSAPP REMINDERS';
+      case 'sales-history':
+        return 'SALES HISTORY';
+      case 'suppliers':
+        return 'SUPPLIERS';
+      case 'purchases':
+        return 'PURCHASES';
+      case 'purchase-history':
+        return 'PURCHASE HISTORY';
+      case 'expenses':
+        return 'EXPENSES';
+      case 'reports':
+        return 'BUSINESS ANALYTICS';
+      case 'manage-users':
+        return 'MANAGE USERS';
+      case 'shops':
+        return 'SHOPS';
+      case 'demo':
+        return 'DEMO';
+      case 'my-print-requests':
+        return 'MY PRINT REQUESTS';
+      case 'print-requests':
+        return 'PRINT REQUESTS';
+      case 'settings':
+        return 'SETTINGS';
+      case 'trash-bin':
+        return 'TRASH BIN';
+      case 'help-support':
+        return 'HELP & SUPPORT';
+      default:
+        return 'DEMO STORE';
+    }
+  };
+
+  return (
+    <div className={`flex min-h-screen ${activeItem === 'pos' ? 'lg:h-screen' : ''} bg-surface font-inter text-text antialiased`}>
+      {/* ── Fixed Pharmacy Green Sidebar ───────────────────────────────────── */}
+      <Sidebar
+        activeItem={activeItem}
+        onSelectItem={navigateTo}
+        isCollapsed={sidebarCollapsed}
+        onToggleCollapsed={() => setSidebarCollapsed((collapsed) => !collapsed)}
+        pendingPrintCount={pendingPrintCount}
+        favoritePageKeys={favoritePageKeys}
+        tipDismissed={tipDismissed}
+        preferenceNotice={sidebarPreferenceNotice}
+        onToggleFavorite={toggleFavoritePage}
+        onDismissTip={dismissSidebarTip}
+      />
+
+      {/* ── Main Workspace Content Pane ──────────────────────────────────────── */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {memoMigrationToast && <div role="status" className="fixed right-4 top-4 z-[60] rounded-control border border-primary/30 bg-surface px-4 py-3 text-sm font-semibold text-text shadow-lg">Pharmacy Memo is now your default receipt template. You can change it in Settings.</div>}
+        {printNotice && <div role={printNotice.error ? 'alert' : 'status'} className={`visual-toast fixed bottom-4 right-4 z-[60] max-w-md rounded-control border px-4 py-3 text-sm shadow-lg ${printNotice.error ? 'border-red-200 bg-red-50 text-red-800' : 'border-primary/30 bg-white text-text'}`}>{printNotice.text}</div>}
+        {authMessage && <p role="alert" className="border-b border-warning bg-warning/15 px-4 py-2 text-sm font-semibold text-text">{authMessage}</p>}
+        {demoAccountNotice && <p role="status" className="border-b border-warning bg-warning/15 px-4 py-2 text-sm font-semibold text-text">{demoAccountNotice}</p>}
+        {shopSettingsError && activeItem !== 'settings' && (
+          <p role="alert" className="border-b border-warning bg-warning/15 px-4 py-2 text-sm font-semibold text-text">
+            Shared shop settings: {shopSettingsError}
+          </p>
+        )}
+        {/* Top Header Strip */}
+        <TopNav
+          currentRole={currentRole}
+          workspaceName={shopIdentity?.name || (currentRole === UserRole.SUPER_ADMIN ? 'Platform Administration' : 'Pharma Care')}
+          shopLogo={shopIdentity?.logoPath ?? ''}
+          username={currentUserName}
+          userId={session.userId}
+          activeTitle={isPageNotFound ? 'PAGE NOT FOUND' : getPageTitle(activeItem)}
+          compact={activeItem === 'pos'}
+          onLogout={onLogout}
+          logoutLabel={logoutLabel}
+          onOpenStockInventory={(medicineId) => viewProductBatches(medicineId, 'low-stock')}
+          onOpenProducts={openStockAlertProducts}
+        />
+
+        {/* Dynamic Screen View */}
+        <main className={`pharmacy-page flex-1 ${
+          activeItem === 'pos'
+            ? 'min-h-0 overflow-y-auto p-2 lg:overflow-hidden'
+            : 'overflow-y-auto p-4 sm:p-6'
+        }`}>
+          {accessMessage && <p role="status" className="visual-toast mb-4 rounded-control border border-warning bg-warning/15 px-4 py-3 text-sm font-semibold text-text">{accessMessage}</p>}
+          {isPageNotFound ? (
+            <section className="mx-auto flex min-h-[50vh] max-w-xl flex-col items-center justify-center gap-4 text-center">
+              <h1 className="text-2xl font-black text-text">Page not found</h1>
+              <p className="text-sm text-muted">The page you requested does not exist.</p>
+              <button
+                type="button"
+                onClick={() => navigateTo('dashboard')}
+                className="rounded-control bg-primary px-4 py-2 text-sm font-bold text-white hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                Back to Dashboard
+              </button>
+            </section>
+          ) : !canPage(activeItem) ? (
+            <p role="alert" className="rounded-control border border-warning bg-warning/15 px-4 py-3 text-sm font-semibold text-text">No access. Redirecting to Dashboard.</p>
+          ) : (
+          <ScreenLoadBoundary key={activeItem}>
+          <Suspense fallback={<ScreenLoading />}>
+          <>
+          {activeItem === 'dashboard' && (
+            <DashboardView
+              sales={completedSales}
+              products={products}
+              customers={customers}
+              currentRole={currentRole}
+              currentUserName={currentUserName}
+              canViewProfit={canPage('reports')
+                && (currentRole === UserRole.ADMIN || currentRole === UserRole.ACCOUNTANT)}
+              onNavigate={navigateTo}
+              onLoadTodayProfit={loadTodayProfit}
+              onTodayProfitLoaded={setTodayProfitPaisa}
+              onOpenCloseDay={() => setShowCloseDayModal(true)}
+            />
+          )}
+
+          {activeItem === 'pos' && (
+            <POSBillingView
+              customers={customers}
+              currentUserId={session.userId}
+              currentRole={currentRole}
+              permissions={session.permissions}
+              currentUserName={currentUserName}
+              companyName={companyName}
+              billingTemplate={billingPreferences.template}
+              receiptFormat={billingPreferences.format}
+              memoSettings={memoSettings}
+              onPrintReceipt={handlePrintReceipt}
+              onSaleComplete={handleSaleComplete}
+            />
+          )}
+
+          {activeItem === 'products' && (
+            <InventoryScreen
+              key={`stock-alert-products-${alertProductNavigationKey}`}
+              mode="products"
+              currentRole={currentRole}
+              currentUserId={session.userId}
+              initialFilter={productFilter}
+              initialSearch={alertProductSearch}
+              initialLowStockOnly={alertProductsLowStockOnly}
+              addProductRequest={addProductRequest > handledAddProductRequest ? addProductRequest : 0}
+              onAddProductRequestHandled={(request) => setHandledAddProductRequest((handled) => Math.max(handled, request))}
+              onFilterApplied={() => setProductFilter(null)}
+              onViewBatches={viewProductBatches}
+            />
+          )}
+
+          {activeItem === 'master-data' && <MasterDataView onViewProducts={viewFilteredProducts} />}
+
+          {activeItem === 'stock-inventory' && (
+            <InventoryScreen
+              key={`stock-inventory-${stockNavigationKey}`}
+              mode="stock"
+              currentRole={currentRole}
+              initialMedicineId={stockMedicineId}
+              initialStockTab={stockInitialTab}
+              onClearMedicineFilter={() => setStockMedicineId(null)}
+            />
+          )}
+
+          {activeItem === 'customers' && (
+            <CustomerLedgerScreen
+              customers={customers}
+              ledgerEntries={ledgerEntries}
+              onRecordPayment={handleRecordPayment}
+              memoSettings={memoSettings}
+              memoFormat={billingPreferences.format}
+              currentUserName={currentUserName}
+              currentRole={currentRole}
+              onPrintReceipt={handlePrintReceipt}
+              onAddCustomer={handleAddCustomer}
+            />
+          )}
+
+          {activeItem === 'customer-ledger' && (
+            <CustomerLedgerScreen
+              customers={customers}
+              ledgerEntries={ledgerEntries}
+              onRecordPayment={handleRecordPayment}
+              memoSettings={memoSettings}
+              memoFormat={billingPreferences.format}
+              currentUserName={currentUserName}
+              currentRole={currentRole}
+              onPrintReceipt={handlePrintReceipt}
+              onAddCustomer={handleAddCustomer}
+            />
+          )}
+
+          {activeItem === 'whatsapp-reminders' && (
+            <WhatsAppRemindersView customers={customers} />
+          )}
+
+          {activeItem === 'sales-history' && (
+            <SalesHistoryView
+              sales={completedSales}
+              currentRole={currentRole}
+              storeName={companyName}
+              address={shopIdentity?.address ?? ''}
+              phone={shopIdentity?.phone ?? ''}
+              generatedBy={currentUserName}
+            />
+          )}
+
+          {activeItem === 'expenses' && (
+            <CashBookScreen
+              transactions={transactions}
+              onAddTransaction={(tx) => setTransactions((prev) => [tx, ...prev])}
+            />
+          )}
+
+          {activeItem === 'reports' && (
+            <ReportsScreen
+              sales={completedSales}
+              currentRole={currentRole}
+              storeName={companyName}
+              address={shopIdentity?.address ?? ''}
+              phone={shopIdentity?.phone ?? ''}
+              generatedBy={currentUserName}
+              onLoadProfitSummary={loadProfitSummary}
+              onLoadCustomSales={(from, toExclusive) => {
+                if (!supabase && isDemoDataLoadedLocally()) {
+                  return Promise.resolve(filterSalesBetween(
+                    completedSales,
+                    from,
+                    new Date(toExclusive.getTime() - 1),
+                  ));
+                }
+                return loadSalesHistoryRange(from, toExclusive);
+              }}
+            />
+          )}
+
+          {activeItem === 'settings' && (
+            <div className="space-y-8">
+              {canPage('settings') && (
+                <SettingsView
+                  activeTemplate={billingPreferences.template}
+                  canEditShopProfile={currentRole === UserRole.ADMIN
+                    && (!supabase || canEditSettingsSection(currentRole, session.permissions, 'settings_shop_profile'))}
+                  isShopAdmin={currentRole === UserRole.ADMIN}
+                  canManageDemoData={currentRole === UserRole.ADMIN
+                    && (!supabase || canEditSettingsSection(currentRole, session.permissions, 'settings_demo_data'))
+                    && canPage('products')
+                    && canPage('suppliers')
+                    && canPage('purchases')}
+                  canLoadDemoData={currentRole === UserRole.ADMIN
+                    && (!supabase || canEditSettingsSection(currentRole, session.permissions, 'settings_demo_data'))
+                    && canPage('products')
+                    && canPage('suppliers')
+                    && canPage('purchases')
+                    && (!supabase || can('categories'))}
+                  canEditOperationalSettings={(!supabase || (shopSettingsLoaded && shopSettings !== null))
+                    && (!supabase || canEditSettingsSection(currentRole, session.permissions, 'settings_receipt_memo'))}
+                  canEditOperationalLimits={Boolean(supabase)
+                    && shopSettingsLoaded
+                    && shopSettings !== null
+                    && canEditSettingsSection(currentRole, session.permissions, 'settings_operations')}
+                  canEditApprovalAutomation={Boolean(supabase)
+                    && currentRole === UserRole.ADMIN
+                    && canEditSettingsSection(currentRole, session.permissions, 'settings_operations')}
+                  operationalLimits={shopSettings ? {
+                    maxDiscountPaisa: shopSettings.maxDiscountPaisa,
+                    roleDiscountPercentCap: shopSettings.roleDiscountPercentCap,
+                    expiryWarningDays: shopSettings.expiryWarningDays,
+                  } : null}
+                  onOperationalLimitsChange={updateOperationalLimits}
+                  canEditReceiptQrSettings={Boolean(supabase)
+                    && canEditSettingsSection(currentRole, session.permissions, 'settings_receipt_qr')}
+                  canEditWhatsAppTemplates={!supabase
+                    || canEditSettingsSection(currentRole, session.permissions, 'settings_whatsapp_templates')}
+                  canRegenerateReceiptQr={Boolean(supabase)
+                    && canEditSettingsSection(currentRole, session.permissions, 'settings_receipt_qr')
+                    && canPage('sales_history')}
+                  operationalSettingsError={shopSettingsError}
+                  onTemplateChange={(template: BillingTemplate) =>
+                    updateBillingPreferences({ ...billingPreferences, template })
+                  }
+                  companyName={companyName}
+                  shopProfile={shopIdentity}
+                  onUpdateShopProfile={async (profile: ShopProfileUpdate) => {
+                    const updatedProfile = await updateCurrentShopProfile(profile);
+                    onShopProfileChange(updatedProfile);
+                    return updatedProfile;
+                  }}
+                  onOpenTemplatePreview={openTemplatePreview}
+                  memoSettings={memoSettings}
+                  onMemoSettingsChange={updateMemoSettings}
+                  memoFormat={billingPreferences.format}
+                  onPrintReceipt={handlePrintReceipt}
+                  onMemoFormatChange={(format) => updateBillingPreferences({ ...billingPreferences, format })}
+                />
+              )}
+              <UserPreferencesPanel userId={session.userId} username={currentUserName} />
+            </div>
+          )}
+
+          {activeItem === 'suppliers' && <SuppliersView />}
+          {activeItem === 'purchases' && (
+            <StockPurchaseView userId={session.userId} onViewHistory={() => navigateTo('purchase-history')} />
+          )}
+          {activeItem === 'purchase-history' && <PurchaseHistoryView currentRole={currentRole} />}
+
+          {activeItem === 'help-support' && <HelpSupportView username={currentUserName} role={currentRole} />}
+
+          {activeItem === 'trash-bin' && <TrashBinView currentRole={currentRole} />}
+
+          {activeItem === 'manage-users' && <ManageUsersView currentUserId={session.userId} currentRole={currentRole} />}
+          {activeItem === 'shops' && currentRole === UserRole.SUPER_ADMIN && <ShopsView />}
+          {activeItem === 'demo' && currentRole === UserRole.SUPER_ADMIN && (
+            <DemoRolePreview
+              onOpenDemo={onOpenDemo}
+              onOpenDemoAccount={onOpenDemoAccount}
+              savedDemoAccount={savedDemoAccount}
+            />
+          )}
+          {activeItem === 'my-print-requests' && <MyPrintRequestsView userId={session.userId} />}
+          {activeItem === 'print-requests' && <PrintRequestsAdminView onPrintReceipt={handlePrintReceipt} />}
+          </>
+          </Suspense>
+          </ScreenLoadBoundary>
+          )}
+        </main>
+      </div>
+
+      {/* ── Global Template Preview Modal (Screenshots 1-4, 68-80) ─────────── */}
+      {showTemplatePreview && (
+        <Suspense fallback={<ScreenLoading />}>
+          <TemplatePreviewModal
+            companyName={companyName}
+            initialTemplate={previewTemplate}
+            initialFormat={billingPreferences.format}
+            memoSettings={memoSettings}
+            canApply={currentRole === UserRole.ADMIN
+              && (!supabase || canEditSettingsSection(
+                currentRole,
+                session.permissions,
+                'settings_receipt_memo',
+              ))}
+            onApply={(template: BillingTemplate, format: ReceiptFormat) => {
+              updateBillingPreferences({ template, format });
+              setShowTemplatePreview(false);
+            }}
+            onClose={() => setShowTemplatePreview(false)}
+          />
+        </Suspense>
+      )}
+
+      {/* ── End of Day Summary Modal (Screenshot 5) ─────────────────────────── */}
+      {showCloseDayModal && (
+        <Suspense fallback={<ScreenLoading />}>
+          <EndOfDayModal
+            onClose={() => setShowCloseDayModal(false)}
+            cashSalesPKR={cashSalesPKR}
+            creditSalesPKR={creditSalesPKR}
+            totalSalesPKR={totalSalesPKR}
+            expensesPKR={expensesPKR}
+            purchasesPKR={0}
+            grossProfitPKR={grossProfitPKR}
+            netCashInHandPKR={netCashInHandPKR}
+          />
+        </Suspense>
+      )}
+    </div>
+  );
+}
+
+function ScreenLoading() {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex min-h-[30vh] flex-col items-center justify-center gap-3 rounded-card border border-border bg-surface p-6 text-text"
+    >
+      <span className="h-8 w-8 animate-spin rounded-full border-4 border-border border-t-primary" aria-hidden="true" />
+      <span className="text-sm font-semibold">Loading page…</span>
+    </div>
+  );
+}
+
+class ScreenLoadBoundary extends Component<
+  React.PropsWithChildren,
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <section role="alert" className="rounded-card border border-border bg-surface p-6 text-center text-text">
+          <h2 className="font-bold">This page could not be loaded.</h2>
+          <p className="mt-2 text-sm text-muted">Check your connection and retry.</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-4 rounded-control bg-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            Retry
+          </button>
+        </section>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+class AppErrorBoundary extends Component<
+  React.PropsWithChildren,
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <main className="flex min-h-screen items-center justify-center bg-surface p-6 text-text">
+          <section className="max-w-md rounded-card border border-border bg-white p-7 text-center shadow-lg">
+            <h1 className="text-lg font-bold">This page could not be displayed.</h1>
+            <p className="mt-2 text-sm text-muted">Reload the app to try again.</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="mt-5 rounded-control bg-primary px-4 py-2 text-sm font-semibold text-white"
+            >
+              Reload
+            </button>
+          </section>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
