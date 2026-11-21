@@ -20,6 +20,10 @@ License entitlements use Ed25519 signatures. `CENTRAL_LICENSE_PRIVATE_KEY` stays
 
 The desktop Vite build aliases the Supabase client module to a `null` shim, so the Supabase SDK and client are not used in the desktop renderer. This prevents desktop builds from connecting to Supabase through that client, but it does not migrate browser-local/mock screens or provide missing local backend endpoints; offline parity remains incomplete.
 
+## Desktop navigation and print requests
+
+The web app keeps pathname routing; the Electron renderer uses URL hash routes so `file:` URLs retain the packaged HTML path while sidebar navigation, refresh, deep links, and back/forward remain functional. Desktop print-request creation, lists, decisions, edit, print tracking, and pending counts use the local encrypted SQLite backend. The web build retains its Supabase implementation. Local print requests do not provide remote receipt-QR links or automatic approval.
+
 ## Authentication and permissions
 
 Local passwords are Argon2id-hashed, and the local Fastify API checks user roles/permissions. Seller discount enforcement uses the cashier percentage setting because the existing shop-settings UI has no separate Seller cap. Backend enforcement, not hidden UI controls, is authoritative for the local checkout route.

@@ -12,6 +12,7 @@ import { registerCustomerRoutes } from './routes/customerRoutes';
 import { registerCashbookRoutes } from './routes/cashbookRoutes';
 import { registerReportRoutes } from './routes/reportRoutes';
 import { registerSettingsRoutes } from './routes/settingsRoutes';
+import { registerPrintRequestRoutes } from './routes/printRequestRoutes';
 import { backupDatabase } from './db/database';
 import { activateShopLicense, checkLicenseStatus, recordSuccessfulCheckin } from './services/licenseService';
 import { getUserById } from './services/authService';
@@ -190,6 +191,7 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
   registerCashbookRoutes(app, db);
   registerReportRoutes(app, db);
   registerSettingsRoutes(app, db);
+  registerPrintRequestRoutes(app, db);
 
   return { app, db };
 }

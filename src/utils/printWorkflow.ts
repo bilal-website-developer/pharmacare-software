@@ -1,4 +1,5 @@
 import { UserRole } from '../types/pharmacy';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 import {
   printHtmlDocument,
   renderPharmacyMemo,
@@ -97,20 +98,33 @@ async function requestReceiptPrint(
   type: PrintRequestType,
   snapshot: PrintSnapshot,
 ): Promise<ReturnType<typeof parsePrintRequestSubmission>> {
-  if (!supabase) throw new Error('Supabase is not configured.');
   const receiptRef = snapshot.data.memoNo.trim()
     || `${type}:${crypto.randomUUID()}`;
+  const requestKey = crypto.randomUUID();
+  if (isDesktopMode()) {
+    const data = await localApiRequest<unknown>('/api/print-requests', 'POST', {
+      type,
+      receiptRef,
+      payload: snapshot,
+      requestKey,
+    });
+    return parsePrintRequestSubmission(data);
+  }
+  if (!supabase) throw new Error('Supabase is not configured.');
   const { data, error } = await supabase.rpc('request_print_v2', {
     p_type: type,
     p_receipt_ref: receiptRef,
     p_payload: snapshot,
-    p_request_key: crypto.randomUUID(),
+    p_request_key: requestKey,
   });
   if (error) throw new Error(`Could not send print request: ${error.message}`);
   return parsePrintRequestSubmission(data);
 }
 
 async function claimAutoApprovedPrintRequest(requestId: string): Promise<boolean> {
+  if (isDesktopMode()) {
+    throw new Error(`Local print requests do not support automatic approval (request ${requestId}).`);
+  }
   if (!supabase) throw new Error('Supabase is not configured.');
   const { data, error } = await supabase.rpc('claim_auto_approved_print_request', {
     p_request_id: requestId,
@@ -133,7 +147,7 @@ async function printApprovedReceipt(
 ): Promise<void> {
   const printSnapshot = tracking ? snapshotWithDuplicateLabel(snapshot) : snapshot;
   let receiptQr: { svg: string; placement: 'footer' | 'after_totals' | 'below_header' } | undefined;
-  if (type === 'sale' && printSnapshot.data.kind === 'SALE' && printSnapshot.saleId) {
+  if (!isDesktopMode() && type === 'sale' && printSnapshot.data.kind === 'SALE' && printSnapshot.saleId) {
     try {
       const link = await getOrCreateReceiptQrLink(printSnapshot.saleId);
       if (link) {
@@ -171,12 +185,19 @@ async function printApprovedReceipt(
 
   await printHtmlDocument(html);
   if (tracking) {
-    if (!supabase) throw new Error('Receipt was sent to the print dialog, but print tracking is unavailable because Supabase is not configured.');
-    const rpc = tracking.kind === 'automatic'
-      ? 'mark_auto_approved_print_request_opened'
-      : 'mark_printed_request';
-    const { error } = await supabase.rpc(rpc, { p_request_id: tracking.requestId });
-    if (error) throw new Error(`Receipt was sent to the print dialog, but print tracking failed: ${error.message}`);
+    if (isDesktopMode()) {
+      await localApiRequest(
+        `/api/print-requests/${encodeURIComponent(tracking.requestId)}/printed`,
+        'POST',
+      );
+    } else {
+      if (!supabase) throw new Error('Receipt was sent to the print dialog, but print tracking is unavailable because Supabase is not configured.');
+      const rpc = tracking.kind === 'automatic'
+        ? 'mark_auto_approved_print_request_opened'
+        : 'mark_printed_request';
+      const { error } = await supabase.rpc(rpc, { p_request_id: tracking.requestId });
+      if (error) throw new Error(`Receipt was sent to the print dialog, but print tracking failed: ${error.message}`);
+    }
   }
 }
 

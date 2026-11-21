@@ -45,7 +45,7 @@ import { filterSalesBetween } from './utils/salesReport';
 import type { ProductFilter } from './components/InventoryScreen';
 import { AuthSession, loadAuthSession } from './utils/auth';
 import { supabase } from './utils/supabase';
-import { desktopGetSession, desktopLogout, isDesktopMode } from './services/localApi';
+import { desktopGetSession, desktopLogout, isDesktopMode, localApiRequest } from './services/localApi';
 import {
   canAccessPage,
   canEditSettingsSection,
@@ -79,6 +79,7 @@ import {
   rememberInstallPromptDismissed,
 } from './utils/installPrompt';
 import { parseDemoPreviewRole } from './utils/demoPreview';
+import { getAppRoutePath, getAppRouteUrl } from './utils/appRouting';
 import {
   clearDemoAccountEntry,
   clearDemoAccountMarker,
@@ -119,6 +120,22 @@ const EndOfDayModal = lazy(() => import('./components/EndOfDayModal').then(({ En
 
 function routeToNavItem(pathname: string): NavItemKey | null {
   return sidebarPageForRoute(pathname)?.key ?? null;
+}
+
+function getCurrentAppRoute(): string {
+  return getAppRoutePath(window.location, isDesktopMode());
+}
+
+function replaceAppRoute(path: string): void {
+  window.history.replaceState({}, '', getAppRouteUrl(window.location, path, isDesktopMode()));
+}
+
+function pushAppRoute(path: string): void {
+  if (isDesktopMode()) {
+    window.location.hash = path;
+    return;
+  }
+  window.history.pushState({}, '', path);
 }
 
 function clearDemoAccountBrowserState(): string | null {
@@ -176,6 +193,14 @@ export default function App() {
   const [demoAccountLoginRole, setDemoAccountLoginRole] = useState<UserRole | null>(null);
   const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [installPromptDismissed, setInstallPromptDismissed] = useState(isInstallPromptDismissed);
+  const [, setRouteVersion] = useState(0);
+
+  useEffect(() => {
+    const refreshRoute = () => setRouteVersion((version) => version + 1);
+    const routeEvent = isDesktopMode() ? 'hashchange' : 'popstate';
+    window.addEventListener(routeEvent, refreshRoute);
+    return () => window.removeEventListener(routeEvent, refreshRoute);
+  }, []);
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (event: Event) => {
@@ -329,7 +354,7 @@ export default function App() {
             try {
               await desktopLogout();
               setSession(null);
-              window.history.replaceState({}, '', '/login');
+              replaceAppRoute('/login');
             } catch {
               window.alert('Could not end the inactive local session. Please contact your administrator.');
               expireSession();
@@ -343,7 +368,7 @@ export default function App() {
             return;
           }
           setSession(null);
-          window.history.replaceState({}, '', '/login');
+          replaceAppRoute('/login');
         })();
       }, 30 * 60 * 1000);
     };
@@ -363,14 +388,14 @@ export default function App() {
         const authenticatedSession = await loadDesktopWorkspaceSession();
         if (!authenticatedSession) throw new Error('Local sign-in did not create an authenticated session.');
         setSession(authenticatedSession);
-        window.history.replaceState({}, '', '/');
+        replaceAppRoute('/');
         return;
       }
       const authenticatedSession = await loadWorkspaceSession(userId, email);
       const warning = clearDemoAccountBrowserState();
       setSession(authenticatedSession);
       if (warning) setAuthMessage(warning);
-      window.history.replaceState({}, '', '/');
+      replaceAppRoute('/');
     } catch (error) {
       if (isDesktopMode()) await desktopLogout();
       else await supabase?.auth.signOut();
@@ -408,7 +433,7 @@ export default function App() {
       setAuthMessage(notices.join(' '));
       setSession(authenticatedSession);
       setDemoAccountLoginRole(null);
-      window.history.replaceState({}, '', '/');
+      replaceAppRoute('/');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not verify the demo account.';
       const { error: signOutError } = await supabase?.auth.signOut()
@@ -431,7 +456,7 @@ export default function App() {
         return;
       }
       setSession(null);
-      window.history.replaceState({}, '', '/login');
+      replaceAppRoute('/login');
       return;
     }
     if (!supabase) return;
@@ -443,18 +468,19 @@ export default function App() {
     const warning = clearDemoAccountBrowserState();
     if (warning) console.error(warning);
     setSession(null);
-    window.history.replaceState({}, '', '/login');
+    replaceAppRoute('/login');
   };
 
-  const receiptRoute = window.location.pathname.match(/^\/r\/([A-Za-z0-9_-]{22,128})\/?$/);
-  if (window.location.pathname === '/r' || window.location.pathname.startsWith('/r/')) {
+  const currentRoute = getCurrentAppRoute();
+  const receiptRoute = currentRoute.match(/^\/r\/([A-Za-z0-9_-]{22,128})\/?$/);
+  if (currentRoute === '/r' || currentRoute.startsWith('/r/')) {
     return (
       <Suspense fallback={<div className="min-h-screen bg-surface" />}>
         <PublicReceiptPage token={receiptRoute?.[1] ?? null} />
       </Suspense>
     );
   }
-  if (window.location.pathname.replace(/\/+$/, '') === '/demo/receipts') {
+  if (currentRoute.replace(/\/+$/, '') === '/demo/receipts') {
     return <DemoReceiptsPage />;
   }
 
@@ -462,7 +488,7 @@ export default function App() {
     return <div className="app-loading flex min-h-screen items-center justify-center bg-surface"><PharmaLogo size={12} /></div>;
   }
 
-  if (window.location.pathname === '/customer-display') {
+  if (currentRoute === '/customer-display') {
     if (!session || !canAccessCustomerDisplay(session.role, session.permissions)) {
       return (
         <main className="flex min-h-screen items-center justify-center bg-surface p-6 text-text">
@@ -499,7 +525,7 @@ export default function App() {
   }
 
   if (!session) {
-    if (window.location.pathname !== '/login') window.history.replaceState({}, '', '/login');
+    if (currentRoute !== '/login') replaceAppRoute('/login');
     return (
       <LoginView
         onLogin={handleLogin}
@@ -614,7 +640,7 @@ function PharmacyApp({
       console.error('Could not clear the Role Demo session:', error);
     }
     setDemoRole(null);
-    window.history.replaceState({}, '', '/');
+    replaceAppRoute('/');
   };
 
   const openDemo = (role: UserRole) => {
@@ -794,7 +820,7 @@ function PharmacyWorkspace({
     return () => window.clearTimeout(timeout);
   }, [sidebarPreferenceNotice]);
 
-  const initialPath = window.location.pathname;
+  const initialPath = getCurrentAppRoute();
   const [activeItem, setActiveItem] = useState<NavItemKey>(
     routeToNavItem(initialPath) ?? 'dashboard'
   );
@@ -829,6 +855,26 @@ function PharmacyWorkspace({
     let disposed = false;
     let failureReported = false;
     const refreshCount = async () => {
+      if (isDesktopMode()) {
+        try {
+          const result = await localApiRequest<{ count: number }>('/api/print-requests/pending-count');
+          if (disposed) return;
+          if (!Number.isSafeInteger(result.count) || result.count < 0) {
+            throw new Error('The local backend returned an invalid pending print count.');
+          }
+          failureReported = false;
+          setPendingPrintCount(result.count);
+        } catch (error) {
+          if (!failureReported && !disposed) {
+            setPrintNotice({
+              text: error instanceof Error ? `Could not refresh pending print requests: ${error.message}` : 'Could not refresh pending print requests.',
+              error: true,
+            });
+          }
+          failureReported = true;
+        }
+        return;
+      }
       if (!supabase) {
         if (!failureReported && !disposed) {
           setPrintNotice({ text: 'Supabase is not configured; print request counts are unavailable.', error: true });
@@ -961,10 +1007,11 @@ function PharmacyWorkspace({
 
   useEffect(() => {
     const syncRoute = () => {
-      const requested = routeToNavItem(window.location.pathname);
+      const currentPath = getCurrentAppRoute();
+      const requested = routeToNavItem(currentPath);
       if (!requested) {
-        if (window.location.pathname === '/login') {
-          window.history.replaceState({}, '', '/');
+        if (currentPath === '/login') {
+          replaceAppRoute('/');
           setIsPageNotFound(false);
           setActiveItem('dashboard');
           return;
@@ -977,22 +1024,23 @@ function PharmacyWorkspace({
       if (!canPage(requested)) {
         setAccessMessage('No access. Your account does not have permission to open that page.');
         setActiveItem('dashboard');
-        window.history.replaceState({}, '', '/');
+        replaceAppRoute('/');
         return;
       }
       setAccessMessage('');
       setActiveItem(requested);
     };
     syncRoute();
-    window.addEventListener('popstate', syncRoute);
-    return () => window.removeEventListener('popstate', syncRoute);
+    const routeEvent = isDesktopMode() ? 'hashchange' : 'popstate';
+    window.addEventListener(routeEvent, syncRoute);
+    return () => window.removeEventListener(routeEvent, syncRoute);
   }, [canPage]);
 
   const navigateTo = React.useCallback((item: NavItemKey) => {
     if (!canPage(item)) {
       setAccessMessage('No access. Your account does not have permission to open that page.');
       setActiveItem('dashboard');
-      window.history.replaceState({}, '', '/');
+      replaceAppRoute('/');
       return;
     }
     setAccessMessage('');
@@ -1003,7 +1051,7 @@ function PharmacyWorkspace({
       setIsPageNotFound(true);
       return;
     }
-    window.history.pushState({}, '', page.route);
+    pushAppRoute(page.route);
   }, [canPage]);
 
   const [productFilter, setProductFilter] = React.useState<ProductFilter>(null);

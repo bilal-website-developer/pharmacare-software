@@ -16,6 +16,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 import { supabase } from '../utils/supabase';
 import { parsePrintSnapshot, PrintSnapshot } from '../utils/printSnapshot';
 import { parsePrintRequestRecord, PrintRequestRecord } from '../utils/printRequestTypes';
@@ -66,47 +67,51 @@ export function PrintRequestsAdminView({ onPrintReceipt }: { onPrintReceipt: Pri
   const [editError, setEditError] = useState('');
 
   const refresh = useCallback(async () => {
-    if (!supabase) {
-      setNotice({ text: 'Supabase is not configured.', error: true });
-      setLoading(false);
-      return;
-    }
-    const { data, error } = await supabase
-      .from('print_requests')
-      .select('id,type,receipt_ref,payload,requested_by,requested_at,status,decided_by,decided_at,note,printed_at')
-      .order('requested_at', { ascending: false })
-      .limit(200);
-    if (error) {
-      setNotice({ text: `Could not load print requests: ${error.message}`, error: true });
-      setLoading(false);
-      return;
-    }
+    let data: unknown;
     try {
+      if (isDesktopMode()) {
+        data = await localApiRequest<unknown[]>('/api/print-requests');
+      } else {
+        if (!supabase) throw new Error('Supabase is not configured.');
+        const { data: response, error } = await supabase
+          .from('print_requests')
+          .select('id,type,receipt_ref,payload,requested_by,requested_at,status,decided_by,decided_at,note,printed_at')
+          .order('requested_at', { ascending: false })
+          .limit(200);
+        if (error) throw new Error(`Could not load print requests: ${error.message}`);
+        data = response ?? [];
+        const parsed = (data as unknown[]).map(parsePrintRequestRecord);
+        const requesterIds = [...new Set(parsed.map((request) => request.requested_by))];
+        let profileWarning: string | null = null;
+        if (requesterIds.length > 0) {
+          const { data: profiles, error: profileError } = await supabase
+            .from('profiles')
+            .select('id,full_name,username,email')
+            .in('id', requesterIds);
+          if (profileError) {
+            profileWarning = `Could not load requester names: ${profileError.message}`;
+          } else {
+            const names = new Map(
+              (profiles ?? []).map((profile) => [
+                profile.id,
+                profile.username || profile.full_name || profile.email || 'Unknown user',
+              ])
+            );
+            parsed.forEach((request) => {
+              request.requester_name = names.get(request.requested_by) || 'Unknown user';
+            });
+          }
+        }
+        setRequests(parsed);
+        setNotice(profileWarning ? { text: profileWarning, error: true } : null);
+        setLoading(false);
+        return;
+      }
+
       if (!Array.isArray(data)) throw new Error('The print-request list response is invalid.');
       const parsed = data.map(parsePrintRequestRecord);
-      const requesterIds = [...new Set(parsed.map((request) => request.requested_by))];
-      let profileWarning: string | null = null;
-      if (requesterIds.length > 0) {
-        const { data: profiles, error: profileError } = await supabase
-          .from('profiles')
-          .select('id,full_name,username,email')
-          .in('id', requesterIds);
-        if (profileError) {
-          profileWarning = `Could not load requester names: ${profileError.message}`;
-        } else {
-          const names = new Map(
-            (profiles ?? []).map((profile) => [
-              profile.id,
-              profile.username || profile.full_name || profile.email || 'Unknown user',
-            ])
-          );
-          parsed.forEach((request) => {
-            request.requester_name = names.get(request.requested_by) || 'Unknown user';
-          });
-        }
-      }
       setRequests(parsed);
-      setNotice(profileWarning ? { text: profileWarning, error: true } : null);
+      setNotice(null);
     } catch (parseError) {
       setNotice({
         text: parseError instanceof Error ? parseError.message : 'Could not parse print requests.',
@@ -164,23 +169,37 @@ export function PrintRequestsAdminView({ onPrintReceipt }: { onPrintReceipt: Pri
       setEditError(editPreview?.error || 'Correct the receipt details before saving.');
       return;
     }
-    if (!supabase) {
+    if (!isDesktopMode() && !supabase) {
       setEditError('Supabase is not configured.');
       return;
     }
     setBusyId(editingRequest.id);
     setEditError('');
     try {
-      const { data, error } = await supabase.rpc('modify_print_request', {
-        p_request_id: editingRequest.id,
-        p_lines: editPreview.snapshot.data.lines,
-        p_discount_paisa: editPreview.snapshot.data.discountPaisa,
-      });
-      if (error) throw new Error(error.message);
-      if (typeof data !== 'object' || data === null || !('payload' in data)) {
+      let payload: unknown;
+      if (isDesktopMode()) {
+        const result = await localApiRequest<{ payload: unknown }>(
+          `/api/print-requests/${encodeURIComponent(editingRequest.id)}/modify`,
+          'POST',
+          { payload: editPreview.snapshot },
+        );
+        payload = result.payload;
+      } else {
+        const { data, error } = await supabase!.rpc('modify_print_request', {
+          p_request_id: editingRequest.id,
+          p_lines: editPreview.snapshot.data.lines,
+          p_discount_paisa: editPreview.snapshot.data.discountPaisa,
+        });
+        if (error) throw new Error(error.message);
+        if (typeof data !== 'object' || data === null || !('payload' in data)) {
+          throw new Error('The server did not return the updated receipt snapshot.');
+        }
+        payload = data.payload;
+      }
+      if (payload === undefined) {
         throw new Error('The server did not return the updated receipt snapshot.');
       }
-      const updatedSnapshot = parsePrintSnapshot(data.payload);
+      const updatedSnapshot = parsePrintSnapshot(payload);
       setRequests((current) =>
         current.map((request) =>
           request.id === editingRequest.id ? { ...request, payload: updatedSnapshot } : request
@@ -221,16 +240,26 @@ export function PrintRequestsAdminView({ onPrintReceipt }: { onPrintReceipt: Pri
   }, [refresh]);
 
   const decide = async (request: PrintRequestRecord, decision: 'approved' | 'rejected', note: string | null) => {
-    if (!supabase) return setNotice({ text: 'Supabase is not configured.', error: true });
+    if (!isDesktopMode() && !supabase) return setNotice({ text: 'Supabase is not configured.', error: true });
     setBusyId(request.id);
     setNotice(null);
     try {
-      const { data, error } = await supabase.rpc('decide_print_request', {
-        p_request_id: request.id,
-        p_decision: decision,
-        p_note: note,
-      });
-      if (error) throw new Error(error.message);
+      let data: unknown;
+      if (isDesktopMode()) {
+        data = await localApiRequest(
+          `/api/print-requests/${encodeURIComponent(request.id)}/decision`,
+          'POST',
+          { decision, note },
+        );
+      } else {
+        const { data: response, error } = await supabase!.rpc('decide_print_request', {
+          p_request_id: request.id,
+          p_decision: decision,
+          p_note: note,
+        });
+        if (error) throw new Error(error.message);
+        data = response;
+      }
       if (decision === 'approved') {
         if (typeof data !== 'object' || data === null || !('payload' in data)) {
           throw new Error('Approval succeeded but no receipt snapshot was returned.');

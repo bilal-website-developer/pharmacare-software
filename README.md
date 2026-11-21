@@ -16,6 +16,7 @@ npm run build
 
 The existing web application runs at `http://localhost:3000`. The desktop renderer can be built with `npm run desktop:renderer`; this build deliberately disables loading `.env` files.
 `npm test` includes the local and central backend suites, plus focused renderer tests.
+The Electron shell uses hash routes (for example `index.html#/products`) so file-based navigation, refresh, and browser history work without changing the web app's pathname routes. Desktop print-request lists, approvals, modifications, print tracking, and pending counts use the local SQLite backend.
 
 ## Desktop development and packaging
 

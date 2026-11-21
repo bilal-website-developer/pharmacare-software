@@ -28,7 +28,7 @@ let isQuitting = false;
 const localAuthToken = crypto.randomBytes(32).toString('hex');
 const localJwtSecret = crypto.randomBytes(48).toString('base64url');
 const localApiPort = 0;
-const allowedApiPath = /^\/api\/(?:auth|license|pos|inventory|purchases|suppliers|customers|cashbook|reports|settings|backup)(?:\/[A-Za-z0-9._/-]+)?(?:\?[A-Za-z0-9_=&.%+-]*)?$/;
+const allowedApiPath = /^\/api\/(?:auth|license|pos|inventory|purchases|suppliers|customers|cashbook|reports|settings|print-requests|backup)(?:\/[A-Za-z0-9._/-]+)?(?:\?[A-Za-z0-9_=&.%+-]*)?$/;
 const allowedMethods = new Set(['GET', 'POST', 'PUT', 'DELETE']);
 
 function getDataRoot(): string {

@@ -245,10 +245,11 @@ The future per-shop barcode cutover must backfill one registry across both `medi
 - Keep factual claims grounded in current code/docs; write **unknown** where verification is missing.
 
 <!-- AUTO:START -->
-Generated at (UTC): 2026-11-21T14:13:26.101Z
+Generated at (UTC): 2026-11-21T15:29:58.016Z
 Git branch: master
 
 Last 5 commit subjects:
+- Complete desktop licensing and recovery foundation
 - Harden desktop licensing and packaging
 - Before final agent run
 
@@ -265,7 +266,7 @@ npm scripts:
 - - `lint`: `tsc --noEmit`
 - - `test:discount`: `tsx --test src/utils/discount.test.ts`
 - - `test:backends`: `npm test --workspace=local-backend && npm test --workspace=central-backend`
-- - `test`: `npm run test:fefo && npm run test:receipt && npm run test:table-export && npm run test:receipt-qr && npm run test:demo-receipt && npm run test:inventory-ui && npm run test:stock-inventory && npm run test:inventory-products && npm run test:stock-alerts && npm run test:pos-catalog && npm run test:product-filters && npm run test:master-data && npm run test:print-snapshot && npm run test:print-request-editor && npm run test:trash-bin && npm run test:store-settings && npm run test:shop-settings && npm run test:shop-logo && npm run test:demo-data && npm run test:demo-preview && npm run test:install-prompt && npm run test:pos-customer && npm run test:held-bills && npm run test:payment-details && npm run test:sales-profit && npm run test:approval-automation && npm run test:invoice-input && npm run test:report && npm run test:discount && npm run test:barcode-scanner && npm run test:labels && npm run test:permissions && npm run test:sidebar && npm run test:manage-users-policy && npm run test:customer-display && npm run test:backends`
+- - `test`: `npm run test:fefo && npm run test:receipt && npm run test:table-export && npm run test:app-routing && npm run test:receipt-qr && npm run test:demo-receipt && npm run test:inventory-ui && npm run test:stock-inventory && npm run test:inventory-products && npm run test:stock-alerts && npm run test:pos-catalog && npm run test:product-filters && npm run test:master-data && npm run test:print-snapshot && npm run test:print-request-editor && npm run test:trash-bin && npm run test:store-settings && npm run test:shop-settings && npm run test:shop-logo && npm run test:demo-data && npm run test:demo-preview && npm run test:install-prompt && npm run test:pos-customer && npm run test:held-bills && npm run test:payment-details && npm run test:sales-profit && npm run test:approval-automation && npm run test:invoice-input && npm run test:report && npm run test:discount && npm run test:barcode-scanner && npm run test:labels && npm run test:permissions && npm run test:sidebar && npm run test:manage-users-policy && npm run test:customer-display && npm run test:backends`
 
 Dependencies and versions: see `package.json`.
 
@@ -284,7 +285,7 @@ src/
   src/utils/
 ```
 
-Test files: 49
+Test files: 51
 
 Environment variable names from .env.example files (values are not read into this block):
 - APP_URL
@@ -316,6 +317,8 @@ Environment variable names from .env.example files (values are not read into thi
 - Validation: `npm run lint`, `npm test`, the root production build, local/central/desktop/dashboard workspace builds, and `npm run desktop:local:package` pass. The local-development build produced an unsigned NSIS x64 installer. Local activation/check-in/replay behavior was API-smoke-tested; packaged UI workflows remain untested.
 - Two packaged-runtime defects were fixed during the launch test: the bundled backend no longer runs its standalone entrypoint, and IPC permits only the packaged main frame while allowing the renderer's `file:` SPA history routes.
 - Current continuation adds portable encrypted backup/restore with a Shop Admin recovery key and first-setup display, daily portable backups once a key exists, Settings and pre-login restore, error rollback of the database/key files, and filtered CSV/XLSX controls on several lists/reports. Restore updates the in-process database key before restarting the local API. Recovery has backend integrity/wrong-key tests; restored entitlements remain device-bound and need operator reissue on a replacement PC. Product/stock, purchase, supplier, customer, staff, cashbook, sales report, and pending-return screens have CSV/XLSX export controls, but full table coverage is not verified.
+- The current bug-fix pass uses hash-based routes only in Electron and preserves web pathname routes. Local print-request creation, list, approval, modification, printed tracking, and pending counts now have backend API routes and a schema migration; local print workflows avoid Supabase and omit remote QR links/automatic approval.
+- UI acceptance remains unverified: the packaged executable was launched through Computer Use, but no new targetable window appeared. The pre-existing local-development window still showed Page not found and the legacy Supabase print-count toast; do not treat its results as evidence about the rebuilt installer or claim sidebar passes.
 - Remaining limitations: full offline parity is still incomplete; multiple desktop-renderer components retain Supabase, browser-local, demo, or in-memory data paths. The packaged installer was rebuilt in local-development mode, but the UI activation/admin/roles and purchase/sale/return/backup/restore/export/offline-reopen workflow was not completed. User credential creation was not performed. Production central activation, replacement-device license reissue, printer acceptance, clean-install/upgrade tests, and code signing remain outstanding. Prior audit had 8 compatible-with-current-major-version findings remaining in the Electron/Electron Builder chain; no `--force` changes were made. No `.env` values were read or changed.
 
 ### Changelog
@@ -323,6 +326,7 @@ Environment variable names from .env.example files (values are not read into thi
 - 2026-11-21: Produced the x64 NSIS installer; removed the Supabase client from the desktop bundle; implemented Ed25519 license signing/verification, expiry/device/status/grace checks and periodic check-in; fixed packaged backend startup and main-frame IPC URL handling. Added tests for local license failure cases. Activation remains unverified without the central deployment and matching build key.
 - 2026-11-21: Added loopback development licensing, local Ed25519 test-key provisioning, one-time activation/check-in tests, portable recovery-key backup/restore and first-admin key display, plus filtered CSV/XLSX controls. Root tests/builds passed and a local-development NSIS installer was produced. Full renderer parity and packaged workflow acceptance remain open.
 - 2026-11-21: Added portable restore before sign-in, rollback of database/protected keys on restore errors, and synchronization of the recovered database key before the backend restarts. README, production setup, decisions, and the desktop audit now document the tested commands and remaining acceptance gaps.
+- 2026-11-21: Added Electron-only hash routing and local SQLite print-request APIs/UI paths, including RETURN receipt snapshots; added routing and backend regression tests. Focused tests, lint, and installer packaging passed. Computer Use could not obtain a window for the newly packaged executable, and the existing dev window still displayed the reported defects, so packaged sidebar verification remains open.
 
 ### Decisions and known issues
 

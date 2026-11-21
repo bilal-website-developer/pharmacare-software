@@ -153,3 +153,9 @@ Code signing is recommended for publisher identity and Windows reputation; it do
 3. Decide portable backup/key recovery and Windows ACL policy before storing production data.
 4. Provide a compatible Windows C++ build toolchain, build the NSIS installer, and test fresh install, upgrade, backup/restore, and data preservation on clean Windows VMs.
 5. Add end-to-end activation and smoke tests with a deployed central API, then sign the installer/update metadata before distribution.
+
+## Current update (2026-11-21)
+
+- Electron now uses hash-based routes while web routing remains pathname-based. Desktop print-request creation, lists, decisions, modifications, printed tracking, and pending counts use the local API; remote QR links and automatic approval remain unavailable in that flow.
+- The focused route tests, local-backend tests, lint, and `npm run desktop:local:package` passed; the x64 NSIS installer was rebuilt.
+- Packaged UI acceptance did not complete: the Computer Use launch returned no targetable window. The already-running local-development window still showed Page not found and the old Supabase print-count toast. This stale window is not evidence that the rebuilt package passes or fails; verify the packaged executable and all sidebar pages when a targetable window is available.

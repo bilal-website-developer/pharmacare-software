@@ -352,6 +352,9 @@ export function initializeSchema(db: Database.Database): void {
       reviewed_by TEXT REFERENCES users(id),
       reviewed_at INTEGER,
       print_snapshot TEXT,
+      request_key TEXT,
+      note TEXT,
+      printed_at INTEGER,
       created_at INTEGER NOT NULL
     );
 
@@ -477,5 +480,23 @@ export function initializeSchema(db: Database.Database): void {
   db.prepare(`
     INSERT OR IGNORE INTO schema_migrations (version, applied_at)
     VALUES (3, ?)
+  `).run(Math.floor(Date.now() / 1000));
+
+  const printRequestColumns = new Set(
+    (db.pragma('table_info(print_requests)') as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!printRequestColumns.has('request_key')) {
+    db.exec('ALTER TABLE print_requests ADD COLUMN request_key TEXT');
+  }
+  if (!printRequestColumns.has('note')) {
+    db.exec('ALTER TABLE print_requests ADD COLUMN note TEXT');
+  }
+  if (!printRequestColumns.has('printed_at')) {
+    db.exec('ALTER TABLE print_requests ADD COLUMN printed_at INTEGER');
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_print_requests_request_key ON print_requests(request_key)');
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+    VALUES (4, ?)
   `).run(Math.floor(Date.now() / 1000));
 }
