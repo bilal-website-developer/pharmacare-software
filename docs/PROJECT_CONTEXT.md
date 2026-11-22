@@ -248,15 +248,15 @@ The future per-shop barcode cutover must backfill one registry across both `medi
 - Keep factual claims grounded in current code/docs; write **unknown** where verification is missing.
 
 <!-- AUTO:START -->
-Generated at (UTC): 2026-11-21T21:35:38.891Z
-Git branch: master
+Generated at (UTC): 2026-11-22T07:33:41.973Z
+Git branch: main
 
 Last 5 commit subjects:
+- Prepare central licensing for production
 - Refresh desktop acceptance context
 - Complete desktop role and installer acceptance
 - Complete desktop licensing and offline E2E
 - Add Pharma Care desktop icon and offline adapters
-- Fix Electron routing and local print requests
 
 npm scripts:
 - - `dev`: `vite --port=3000 --host=0.0.0.0`

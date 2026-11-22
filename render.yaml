@@ -2,7 +2,7 @@ services:
   - type: web
     name: pharma-care-central
     runtime: docker
-    plan: starter
+    plan: free
     dockerfilePath: ./central-backend/Dockerfile
     dockerContext: .
     healthCheckPath: /api/health
