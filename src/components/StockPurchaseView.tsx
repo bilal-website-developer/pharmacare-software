@@ -62,6 +62,10 @@ interface PostedPurchase {
   total_paisa: number;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 const localDate = () => {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -101,6 +105,46 @@ function readDrafts(userId: string): PurchaseDraft[] {
   }
 }
 
+function validatePurchaseDrafts(value: unknown): PurchaseDraft[] {
+  if (!Array.isArray(value)) throw new Error('Saved held purchases have an unexpected format.');
+  const valid = value.every((draft) => {
+    if (!isRecord(draft) || !Array.isArray(draft.lines) || draft.lines.length === 0) return false;
+    if (typeof draft.id !== 'string' || typeof draft.savedAt !== 'string'
+      || typeof draft.supplierId !== 'string'
+      || (draft.paymentType !== 'cash' && draft.paymentType !== 'credit')
+      || typeof draft.invoiceNumber !== 'string' || typeof draft.purchaseDate !== 'string'
+      || typeof draft.discount !== 'string' || typeof draft.notes !== 'string') return false;
+    return draft.lines.every((line) => {
+      if (!isRecord(line) || !isRecord(line.product)) return false;
+      const product = line.product;
+      if (!Array.isArray(product.units) || product.units.length === 0) return false;
+      return typeof product.id === 'string'
+        && typeof product.code === 'string'
+        && typeof product.brand_name === 'string'
+        && typeof product.generic_name === 'string'
+        && typeof product.company === 'string'
+        && typeof product.stock === 'number'
+        && product.units.length > 0
+        && product.units.every((unit) => isRecord(unit)
+          && typeof unit.id === 'string'
+          && typeof unit.name === 'string'
+          && typeof unit.conversion_factor === 'number'
+          && unit.conversion_factor > 0
+          && typeof unit.is_default_sale_unit === 'boolean'
+          && Number.isSafeInteger(unit.price_paisa) && Number(unit.price_paisa) >= 0)
+        && typeof line.unitId === 'string'
+        && typeof line.quantity === 'number' && Number.isSafeInteger(line.quantity) && line.quantity > 0
+        && typeof line.bonusQty === 'number' && Number.isSafeInteger(line.bonusQty) && line.bonusQty >= 0
+        && typeof line.batchNumber === 'string'
+        && typeof line.expiryDate === 'string'
+        && typeof line.rate === 'string'
+        && typeof line.mrp === 'string';
+    });
+  });
+  if (!valid) throw new Error('One or more held purchases are invalid and were not loaded.');
+  return value as PurchaseDraft[];
+}
+
 function unitFor(line: CartLine) {
   return line.product.units.find((unit) => unit.id === line.unitId) ?? line.product.units[0];
 }
@@ -129,7 +173,8 @@ export function StockPurchaseView({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showHeld, setShowHeld] = useState(false);
-  const [drafts, setDrafts] = useState<PurchaseDraft[]>(() => readDrafts(userId));
+  const [drafts, setDrafts] = useState<PurchaseDraft[]>([]);
+  const [draftsOwnerId, setDraftsOwnerId] = useState('');
   const [notice, setNotice] = useState<{ text: string; error: boolean; viewHistory?: boolean } | null>(null);
 
   const refreshProducts = useCallback(async (): Promise<string | null> => {
@@ -214,12 +259,48 @@ export function StockPurchaseView({
   useEffect(() => { void refreshProducts(); }, [refreshProducts]);
 
   useEffect(() => {
+    let active = true;
+    setDrafts([]);
+    setDraftsOwnerId('');
+    if (isDesktopMode()) {
+      void localApiRequest<{ items: unknown[] }>('/api/workflow-drafts/purchase-drafts')
+        .then((response) => {
+          if (!active) return;
+          setDrafts(validatePurchaseDrafts(response.items));
+          setDraftsOwnerId(userId);
+        })
+        .catch((error: unknown) => {
+          if (!active) return;
+          setNotice({
+            text: error instanceof Error ? `Could not load held purchases: ${error.message}` : 'Could not load held purchases.',
+            error: true,
+          });
+        });
+    } else {
+      setDrafts(readDrafts(userId));
+      setDraftsOwnerId(userId);
+    }
+    return () => { active = false; };
+  }, [userId]);
+
+  const persistDrafts = async (nextDrafts: PurchaseDraft[]): Promise<boolean> => {
+    if (draftsOwnerId !== userId) {
+      setNotice({ text: 'Held purchases are still loading. Try again in a moment.', error: true });
+      return false;
+    }
     try {
-      localStorage.setItem(draftKey(userId), JSON.stringify(drafts));
+      if (isDesktopMode()) {
+        await localApiRequest('/api/workflow-drafts/purchase-drafts', 'PUT', { items: nextDrafts });
+      } else {
+        localStorage.setItem(draftKey(userId), JSON.stringify(nextDrafts));
+      }
+      setDrafts(nextDrafts);
+      return true;
     } catch (error) {
       setNotice({ text: error instanceof Error ? `Could not save held purchases: ${error.message}` : 'Could not save held purchases.', error: true });
+      return false;
     }
-  }, [drafts, userId]);
+  };
 
   const brands = useMemo(
     () => ['ALL', ...Array.from(new Set(products.map((product) => product.company).filter(Boolean))).sort()],
@@ -277,7 +358,11 @@ export function StockPurchaseView({
     setCart((current) => current.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line));
   };
 
-  const holdPurchase = () => {
+  const holdPurchase = async () => {
+    if (draftsOwnerId !== userId) {
+      setNotice({ text: 'Held purchases are still loading. Try again in a moment.', error: true });
+      return;
+    }
     if (!cart.length) {
       setNotice({ text: 'Add at least one item before holding a purchase.', error: true });
       return;
@@ -293,9 +378,9 @@ export function StockPurchaseView({
       notes,
       lines: cart,
     };
-    setDrafts((current) => [draft, ...current]);
+    if (!await persistDrafts([draft, ...drafts])) return;
     clearForm();
-    setNotice({ text: 'Purchase held on this device.', error: false });
+    setNotice({ text: 'Purchase held for this account.', error: false });
   };
 
   const clearForm = () => {
@@ -308,7 +393,8 @@ export function StockPurchaseView({
     setNotes('');
   };
 
-  const resumeDraft = (draft: PurchaseDraft) => {
+  const resumeDraft = async (draft: PurchaseDraft) => {
+    if (!await persistDrafts(drafts.filter((item) => item.id !== draft.id))) return;
     setCart(draft.lines);
     setSupplierId(draft.supplierId);
     setPaymentType(draft.paymentType);
@@ -316,8 +402,11 @@ export function StockPurchaseView({
     setPurchaseDate(draft.purchaseDate);
     setDiscount(draft.discount);
     setNotes(draft.notes);
-    setDrafts((current) => current.filter((item) => item.id !== draft.id));
     setShowHeld(false);
+  };
+
+  const deleteDraft = async (draft: PurchaseDraft) => {
+    await persistDrafts(drafts.filter((item) => item.id !== draft.id));
   };
 
   const savePurchase = async () => {
@@ -418,7 +507,7 @@ export function StockPurchaseView({
           <p className="mt-1 text-sm text-muted">{cart.length} {cart.length === 1 ? 'item' : 'items'} in cart</p>
         </div>
         <div className="flex gap-2">
-          <button type="button" onClick={() => setShowHeld(true)} className="rounded-control border border-border bg-white px-3 py-2 text-sm font-semibold text-text">
+          <button type="button" onClick={() => setShowHeld(true)} disabled={draftsOwnerId !== userId} className="rounded-control border border-border bg-white px-3 py-2 text-sm font-semibold text-text disabled:opacity-50">
             <Play className="mr-1 inline h-4 w-4" /> Held purchases ({drafts.length})
           </button>
           <button type="button" onClick={() => void refreshProducts()} disabled={loading} aria-label="Refresh products" className="rounded-control border border-border bg-white p-2 text-muted disabled:opacity-50">
@@ -585,7 +674,7 @@ export function StockPurchaseView({
           <div className="flex justify-between"><h3 id="held-purchases-title" className="font-bold text-text">Held purchases</h3><button type="button" onClick={() => setShowHeld(false)} aria-label="Close held purchases"><X /></button></div>
           {drafts.length === 0 ? <p className="py-6 text-center text-sm text-muted">No held purchases.</p> : drafts.map((draft) => <div key={draft.id} className="flex items-center justify-between gap-3 border-t border-border py-3">
             <div><p className="font-semibold text-text">{draft.lines.length} items · {draft.invoiceNumber || 'No invoice number'}</p><p className="text-xs text-muted">{new Date(draft.savedAt).toLocaleString()}</p></div>
-            <div className="flex gap-2"><button type="button" onClick={() => resumeDraft(draft)} className="rounded-control bg-primary px-3 py-1.5 text-xs font-bold text-white">Resume</button><button type="button" aria-label="Delete held purchase" onClick={() => setDrafts((current) => current.filter((item) => item.id !== draft.id))} className="rounded-control border border-border p-1.5 text-danger"><Trash2 size={15} /></button></div>
+            <div className="flex gap-2">            <button type="button" onClick={() => { void resumeDraft(draft); }} className="rounded-control bg-primary px-3 py-1.5 text-xs font-bold text-white">Resume</button><button type="button" aria-label="Delete held purchase" onClick={() => { void deleteDraft(draft); }} className="rounded-control border border-border p-1.5 text-danger"><Trash2 size={15} /></button></div>
           </div>)}
         </section>
       </div>}

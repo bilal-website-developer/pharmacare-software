@@ -147,7 +147,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </div>
 
       {/* ── Dashboard metrics ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 gap-3.5 md:grid-cols-4 xl:grid-cols-7">
+      <div className="dashboard-metrics-grid grid gap-3.5">
         {/* 1. Today's Sales */}
         <div className="flex flex-col justify-between rounded-card border border-border bg-surface p-4 shadow-xs">
           <div className="flex items-center justify-between">
@@ -300,7 +300,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <h3 className="text-xs font-black text-muted tracking-wider uppercase">
           Quick Actions
         </h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5">
+        <div className="dashboard-actions-grid grid gap-3.5">
           {/* New Sale Button */}
           <button
             type="button"

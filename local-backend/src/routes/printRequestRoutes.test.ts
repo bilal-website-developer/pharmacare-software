@@ -33,7 +33,11 @@ test('local print requests are private, idempotent, and admin-managed', async (t
     authorization: `Bearer ${app.jwt.sign({ userId: admin.id, role: admin.role })}`,
   };
   const cashierHeaders = {
-    authorization: `Bearer ${app.jwt.sign({ userId: cashier.id, role: cashier.role })}`,
+    authorization: `Bearer ${app.jwt.sign({
+      userId: cashier.id,
+      role: cashier.role,
+      permissions: cashier.permissions,
+    })}`,
   };
   const requestKey = crypto.randomUUID();
   const payload = {

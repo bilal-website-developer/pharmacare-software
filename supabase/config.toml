@@ -5,3 +5,6 @@ verify_jwt = true
 
 [functions.get-public-receipt]
 verify_jwt = false
+
+[functions.central-licensing]
+verify_jwt = false

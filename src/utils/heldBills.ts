@@ -106,6 +106,11 @@ export function readHeldBills(userId: string, storage?: HeldBillStorage): HeldBi
   } catch {
     throw new Error('Saved held bills could not be read because the browser data is invalid.');
   }
+  return validateHeldBills(parsed);
+}
+
+export function validateHeldBills(value: unknown): HeldBill[] {
+  const parsed = value;
   if (!Array.isArray(parsed)) {
     throw new Error('Saved held bills have an unexpected format.');
   }

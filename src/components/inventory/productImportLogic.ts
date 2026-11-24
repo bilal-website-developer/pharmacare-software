@@ -1,3 +1,5 @@
+import { parseCsvRows } from '../../utils/csv';
+
 export interface ParsedProductCsvRow {
   line: number;
   values: Record<string, string>;
@@ -17,6 +19,8 @@ export interface ProductImportPreviewRow extends ParsedProductCsvRow {
   errors: string[];
 }
 
+export const PRODUCT_IMPORT_BATCH_SIZE = 500;
+
 const REQUIRED_HEADERS = [
   'code',
   'brand_name',
@@ -29,42 +33,7 @@ const REQUIRED_HEADERS = [
 ] as const;
 
 export function parseProductCsv(text: string): ParsedProductCsvRow[] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = '';
-  let quoted = false;
-
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (quoted) {
-      if (character === '"' && text[index + 1] === '"') {
-        cell += '"';
-        index += 1;
-      } else if (character === '"') {
-        quoted = false;
-      } else {
-        cell += character;
-      }
-    } else if (character === '"' && cell.length === 0) {
-      quoted = true;
-    } else if (character === ',') {
-      row.push(cell);
-      cell = '';
-    } else if (character === '\n') {
-      row.push(cell.replace(/\r$/, ''));
-      if (row.some((value) => value.trim())) rows.push(row);
-      row = [];
-      cell = '';
-    } else {
-      cell += character;
-    }
-  }
-
-  if (quoted) throw new Error('The CSV file has an unclosed quoted field.');
-  if (cell.length || row.length) {
-    row.push(cell.replace(/\r$/, ''));
-    if (row.some((value) => value.trim())) rows.push(row);
-  }
+  const rows = parseCsvRows(text);
   if (rows.length < 2) throw new Error('The CSV file has a header row and at least one product row.');
 
   const headers = rows[0].map((value) => value.trim().replace(/^\uFEFF/, ''));
@@ -78,29 +47,44 @@ export function parseProductCsv(text: string): ParsedProductCsvRow[] {
   }));
 }
 
+export function chunkProductImportRows<T>(
+  rows: readonly T[],
+  batchSize = PRODUCT_IMPORT_BATCH_SIZE,
+): T[][] {
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
+    throw new RangeError('Import batch size must be a positive whole number.');
+  }
+  const batches: T[][] = [];
+  for (let index = 0; index < rows.length; index += batchSize) {
+    batches.push(rows.slice(index, index + batchSize));
+  }
+  return batches;
+}
+
 function normalized(value: string | null | undefined) {
   return (value ?? '').trim().toLowerCase();
 }
 
-function duplicateIdentity(
-  candidate: ProductDuplicateIdentity,
-  existing: ProductDuplicateIdentity,
-) {
-  if (candidate.barcode) {
-    return Boolean(existing.barcode)
-      && normalized(candidate.barcode) === normalized(existing.barcode);
-  }
-  return normalized(candidate.brand_name) === normalized(existing.brand_name)
-    && normalized(candidate.company) === normalized(existing.company)
-    && (!candidate.strength_present
-      || normalized(candidate.strength) === normalized(existing.strength));
+function fallbackIdentityKey(product: ProductDuplicateIdentity, includeStrength: boolean) {
+  const identity = [normalized(product.brand_name), normalized(product.company)];
+  if (includeStrength) identity.push(normalized(product.strength));
+  return JSON.stringify(identity);
 }
 
 export function previewProductCsv(
   rows: readonly ParsedProductCsvRow[],
   existingProducts: readonly ProductDuplicateIdentity[],
+  today = new Date().toISOString().slice(0, 10),
 ): ProductImportPreviewRow[] {
-  const seen: ProductDuplicateIdentity[] = [...existingProducts];
+  const seenBarcodes = new Set<string>();
+  const seenFallbackIdentities = new Set<string>();
+  const seenStrengthIdentities = new Set<string>();
+  for (const product of existingProducts) {
+    if (product.barcode) seenBarcodes.add(normalized(product.barcode));
+    seenFallbackIdentities.add(fallbackIdentityKey(product, false));
+    seenStrengthIdentities.add(fallbackIdentityKey(product, true));
+  }
+  const seenCodes = new Set<string>();
   return rows.map(({ line, values }) => {
     const errors: string[] = [];
     const product = {
@@ -113,7 +97,7 @@ export function previewProductCsv(
       strength_present: Object.prototype.hasOwnProperty.call(values, 'strength'),
     };
 
-    if (Object.values(product).some((value) => typeof value === 'string' && !value.trim())) {
+    if (![product.code, product.brand_name, product.generic_name, product.company].every((value) => value.trim())) {
       errors.push('Code, product name, generic name, and manufacturer are required.');
     }
     if (!values.category?.trim()) errors.push('Category is required.');
@@ -130,6 +114,34 @@ export function previewProductCsv(
     if (!Number.isSafeInteger(minimumStock) || minimumStock < 0 || minimumStock > 2_147_483_647) {
       errors.push('Minimum stock must be a non-negative whole number.');
     }
+    const openingStockQuantity = Number(values.opening_stock_qty || 0);
+    const openingCostPaisa = Number(values.opening_cost_paisa);
+    const openingBatchNumber = values.opening_batch_number?.trim() ?? '';
+    const openingExpiryDate = values.opening_expiry_date?.trim() ?? '';
+    const hasOpeningBatchDetails = Boolean(openingBatchNumber || openingExpiryDate || values.opening_cost_paisa?.trim());
+    const openingExpiryTimestamp = Date.parse(`${openingExpiryDate}T00:00:00Z`);
+    const validOpeningExpiry = /^\d{4}-\d{2}-\d{2}$/.test(openingExpiryDate)
+      && Number.isFinite(openingExpiryTimestamp)
+      && new Date(openingExpiryTimestamp).toISOString().slice(0, 10) === openingExpiryDate;
+    if (!Number.isSafeInteger(openingStockQuantity) || openingStockQuantity < 0
+      || openingStockQuantity > 2_147_483_647) {
+      errors.push('Opening stock quantity must be a non-negative whole number.');
+    } else if (openingStockQuantity > 0) {
+      if (!openingBatchNumber) errors.push('Opening batch number is required when opening stock is greater than zero.');
+      if (!validOpeningExpiry || openingExpiryDate <= today) {
+        errors.push('Opening stock expiry must be a valid future date in YYYY-MM-DD format.');
+      }
+      if (!Number.isSafeInteger(openingCostPaisa) || openingCostPaisa < 0
+        || openingCostPaisa > 2_147_483_647) {
+        errors.push('Opening stock cost must be a non-negative whole number of paisa per sale unit.');
+      }
+      const baseQuantity = openingStockQuantity * conversionFactor;
+      if (!Number.isSafeInteger(baseQuantity) || baseQuantity > 2_147_483_647) {
+        errors.push('Opening stock quantity exceeds the supported stock limit.');
+      }
+    } else if (hasOpeningBatchDetails) {
+      errors.push('Opening batch details require a positive opening stock quantity.');
+    }
     if (values.drug_class && !['OTC', 'RX', 'CONTROLLED', 'NARCOTIC'].includes(values.drug_class)) {
       errors.push('Medicine classification is unsupported.');
     }
@@ -142,11 +154,20 @@ export function previewProductCsv(
         errors.push(`${booleanField} must be a valid boolean value.`);
       }
     }
-    if (seen.some((existing) => duplicateIdentity(product, existing))) {
+    const code = normalized(product.code);
+    const identityAlreadySeen = product.barcode
+      ? seenBarcodes.has(normalized(product.barcode))
+      : (product.strength_present
+        ? seenStrengthIdentities.has(fallbackIdentityKey(product, true))
+        : seenFallbackIdentities.has(fallbackIdentityKey(product, false)));
+    if (seenCodes.has(code) || identityAlreadySeen) {
       errors.push('This product duplicates an existing product or another row in this file.');
     } else {
-      seen.push(product);
+      if (product.barcode) seenBarcodes.add(normalized(product.barcode));
+      seenFallbackIdentities.add(fallbackIdentityKey(product, false));
+      seenStrengthIdentities.add(fallbackIdentityKey(product, true));
     }
+    if (code) seenCodes.add(code);
 
     return { line, values, errors };
   });

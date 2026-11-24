@@ -8,6 +8,7 @@ export interface LicenseClaims {
   hardwareId: string;
   status: 'ACTIVE' | 'SUSPENDED' | 'REVOKED';
   graceDays: number;
+  warningDays?: number;
   enabledPages?: LicensePageKey[];
   enabledFeatures?: LicenseFeatureKey[];
 }
@@ -29,7 +30,14 @@ export function signLicenseToken(claims: LicenseClaims, privateKey: string): str
     throw new Error('CENTRAL_LICENSE_PRIVATE_KEY must be an Ed25519 private key.');
   }
   const header = Buffer.from(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' })).toString('base64url');
-  const payload = Buffer.from(JSON.stringify({ ...claims, ...access })).toString('base64url');
+  const warningDays = claims.warningDays ?? Math.min(14, claims.graceDays);
+  if (
+    !Number.isInteger(claims.graceDays) || claims.graceDays < 1 || claims.graceDays > 365
+    || !Number.isInteger(warningDays) || warningDays < 1 || warningDays > claims.graceDays
+  ) {
+    throw new Error('License offline warning and grace periods are invalid.');
+  }
+  const payload = Buffer.from(JSON.stringify({ ...claims, warningDays, ...access })).toString('base64url');
   const signature = sign(
     null,
     Buffer.from(`${header}.${payload}`),

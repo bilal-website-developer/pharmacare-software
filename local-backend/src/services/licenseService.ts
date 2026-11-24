@@ -14,6 +14,7 @@ export interface LicenseClaims {
   hardwareId: string;
   status: 'ACTIVE' | 'SUSPENDED' | 'REVOKED';
   graceDays: number;
+  warningDays: number;
   enabledPages: LicensePageKey[];
   enabledFeatures: LicenseFeatureKey[];
 }
@@ -39,7 +40,8 @@ export function verifyLicenseToken(
     const rawClaims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as Partial<LicenseClaims>;
     const access = normalizeLicenseAccess(rawClaims.enabledPages, rawClaims.enabledFeatures);
     if (!access) return null;
-    const claims = { ...rawClaims, ...access } as LicenseClaims;
+    const warningDays = rawClaims.warningDays ?? Math.min(14, rawClaims.graceDays ?? 30);
+    const claims = { ...rawClaims, warningDays, ...access } as LicenseClaims;
     const expiry = typeof claims.expiresAt === 'string' ? Date.parse(claims.expiresAt) : NaN;
     if (
       typeof claims.shopId !== 'string' || !claims.shopId
@@ -47,7 +49,8 @@ export function verifyLicenseToken(
       || typeof claims.hardwareId !== 'string' || claims.hardwareId !== expectedHardwareId
       || !Number.isFinite(expiry)
       || !['ACTIVE', 'SUSPENDED', 'REVOKED'].includes(claims.status || '')
-      || !Number.isInteger(claims.graceDays) || (claims.graceDays as number) < 1 || (claims.graceDays as number) > 365
+      || !Number.isInteger(claims.graceDays) || claims.graceDays < 1 || claims.graceDays > 365
+      || !Number.isInteger(claims.warningDays) || claims.warningDays < 1 || claims.warningDays > claims.graceDays
     ) return null;
     return claims as LicenseClaims;
   } catch {
@@ -157,12 +160,12 @@ export function checkLicenseStatus(
 
   const secondsSinceOnline = Math.max(0, now - store.last_verified_online);
   const graceTotal = claims.graceDays * 86400;
-  const warningThreshold = 14 * 86400; // 14 days
+  const warningThreshold = Math.max(0, graceTotal - claims.warningDays * 86400);
 
   const secondsRemaining = Math.max(0, graceTotal - secondsSinceOnline);
   const daysRemainingGrace = Math.floor(secondsRemaining / 86400);
 
-  if (secondsSinceOnline > graceTotal) {
+  if (secondsSinceOnline >= graceTotal) {
     return {
       isActivated: true,
       status: 'RESTRICTED',
@@ -176,7 +179,7 @@ export function checkLicenseStatus(
     };
   }
 
-  if (secondsSinceOnline > warningThreshold) {
+  if (secondsSinceOnline >= warningThreshold) {
     return {
       isActivated: true,
       status: 'WARNING',

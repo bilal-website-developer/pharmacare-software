@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import { Bell, RefreshCw } from 'lucide-react';
 import { usePermissions } from '../permissions';
 import { loadStockAlertsSummary } from '../data/stockAlerts';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 import {
   formatStockAlertBadgeCount,
   getStockAlertLinkTarget,
@@ -16,6 +17,14 @@ import { getSupabaseErrorMessage } from '../utils/supabaseError';
 import { STOCK_CHANGED_EVENT } from '../utils/stockAlertsEvents';
 
 const seenAlertsStorageKey = (userId: string) => `pharma-care.stock-alerts.seen.${userId}`;
+
+interface DeveloperAnnouncement {
+  id: string;
+  title: string;
+  body: string;
+  published_at: string;
+  read_at: number | null;
+}
 
 function readSeenKeys(userId: string): Set<string> {
   try {
@@ -50,8 +59,10 @@ export function StockAlertBell({
 }: StockAlertBellProps) {
   const { can } = usePermissions();
   const [summary, setSummary] = useState<StockAlertsSummary | null>(null);
+  const [announcements, setAnnouncements] = useState<DeveloperAnnouncement[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [announcementError, setAnnouncementError] = useState('');
   const [open, setOpen] = useState(false);
   const [seenKeys, setSeenKeys] = useState<Set<string>>(() => readSeenKeys(userId));
   const [panelTop, setPanelTop] = useState(0);
@@ -63,7 +74,9 @@ export function StockAlertBell({
   const linkTarget = getStockAlertLinkTarget(canOpenStockInventory, canOpenProducts);
   const items = summary?.items ?? [];
   const totalCount = (summary?.low_count ?? 0) + (summary?.out_count ?? 0);
-  const badgeCount = error ? null : formatStockAlertBadgeCount(totalCount);
+  const unreadAnnouncements = announcements.filter((announcement) => announcement.read_at === null);
+  const combinedCount = totalCount + unreadAnnouncements.length;
+  const badgeCount = error ? null : formatStockAlertBadgeCount(combinedCount);
   const unseenKeys = useMemo(() => getUnseenStockAlertKeys(items, seenKeys), [items, seenKeys]);
   const lowItems = items.filter((item) => item.kind === 'low');
   const outItems = items.filter((item) => item.kind === 'out');
@@ -84,6 +97,32 @@ export function StockAlertBell({
     }
   }, []);
 
+  const refreshAnnouncements = useCallback(async () => {
+    if (!isDesktopMode()) {
+      setAnnouncements([]);
+      setAnnouncementError('');
+      return;
+    }
+    try {
+      const result = await localApiRequest<unknown>('/api/notifications/developer-announcements');
+      if (
+        !Array.isArray(result)
+        || result.some((item) => (
+          !item || typeof item !== 'object'
+          || typeof (item as DeveloperAnnouncement).id !== 'string'
+          || typeof (item as DeveloperAnnouncement).title !== 'string'
+          || typeof (item as DeveloperAnnouncement).body !== 'string'
+          || typeof (item as DeveloperAnnouncement).published_at !== 'string'
+          || !((item as DeveloperAnnouncement).read_at === null || typeof (item as DeveloperAnnouncement).read_at === 'number')
+        ))
+      ) throw new Error('The local announcements service returned invalid data.');
+      setAnnouncements(result as DeveloperAnnouncement[]);
+      setAnnouncementError('');
+    } catch (caught) {
+      setAnnouncementError(caught instanceof Error ? caught.message : 'Could not load developer announcements.');
+    }
+  }, []);
+
   useEffect(() => {
     setSeenKeys(readSeenKeys(userId));
   }, [userId]);
@@ -99,12 +138,16 @@ export function StockAlertBell({
     const startPolling = () => {
       stopPolling();
       if (document.visibilityState === 'visible') {
-        intervalId = window.setInterval(() => void refresh(), 60_000);
+        intervalId = window.setInterval(() => {
+          void refresh();
+          void refreshAnnouncements();
+        }, 60_000);
       }
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         void refresh();
+        void refreshAnnouncements();
         startPolling();
       } else {
         stopPolling();
@@ -113,6 +156,7 @@ export function StockAlertBell({
     const onStockChanged = () => void refresh();
 
     void refresh();
+    void refreshAnnouncements();
     startPolling();
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener(STOCK_CHANGED_EVENT, onStockChanged);
@@ -122,7 +166,7 @@ export function StockAlertBell({
       window.removeEventListener(STOCK_CHANGED_EVENT, onStockChanged);
       requestSequence.current += 1;
     };
-  }, [refresh, userId]);
+  }, [refresh, refreshAnnouncements, userId]);
 
   useEffect(() => {
     if (!open) return;
@@ -158,11 +202,30 @@ export function StockAlertBell({
     persistSeenKeys(userId, next);
   };
 
+  const markAnnouncementsRead = async () => {
+    const unread = announcements.filter((announcement) => announcement.read_at === null);
+    if (!unread.length) return;
+    try {
+      await Promise.all(unread.map((announcement) => localApiRequest(
+        `/api/notifications/developer-announcements/${encodeURIComponent(announcement.id)}/read`,
+        'POST',
+      )));
+      const readAt = Math.floor(Date.now() / 1000);
+      setAnnouncements((current) => current.map((announcement) => (
+        announcement.read_at === null ? { ...announcement, read_at: readAt } : announcement
+      )));
+      setAnnouncementError('');
+    } catch (caught) {
+      setAnnouncementError(caught instanceof Error ? caught.message : 'Could not mark announcements as read.');
+    }
+  };
+
   const openPanel = () => {
     if (!open) {
       markCurrentAlertsSeen(items);
       setPanelTop(buttonRef.current?.getBoundingClientRect().bottom ?? 0);
       void refresh();
+      void refreshAnnouncements().then(() => markAnnouncementsRead());
     }
     setOpen((current) => !current);
   };
@@ -225,6 +288,38 @@ export function StockAlertBell({
     </section>
   );
 
+  const renderDeveloperAnnouncements = () => !isDesktopMode() ? null : (
+    <section aria-labelledby="developer-announcements-title">
+      <div className="px-3 pb-1">
+        <h3 id="developer-announcements-title" className="text-xs font-bold uppercase tracking-wide text-muted">
+          Developer updates
+        </h3>
+      </div>
+      {announcementError ? (
+        <p role="alert" className="px-3 py-2 text-sm text-danger">{announcementError}</p>
+      ) : announcements.length === 0 ? (
+        <p className="px-3 py-2 text-sm text-muted">No developer updates</p>
+      ) : (
+        <div className="divide-y divide-border">
+          {announcements.map((announcement) => (
+            <article key={announcement.id} className="px-3 py-2">
+              <div className="flex items-start justify-between gap-2">
+                <h4 className="text-sm font-bold text-text">{announcement.title}</h4>
+                {announcement.read_at === null && (
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary">New</span>
+                )}
+              </div>
+              <p className="mt-1 whitespace-pre-wrap text-sm text-muted">{announcement.body}</p>
+              <time className="mt-1 block text-xs text-muted" dateTime={announcement.published_at}>
+                {new Date(announcement.published_at).toLocaleString()}
+              </time>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+
   const linkHref = linkTarget === 'stock-inventory' ? '/stock-inventory' : '/products';
 
   return (
@@ -235,11 +330,11 @@ export function StockAlertBell({
         aria-label={error
           ? 'Stock alerts unavailable; try again'
           : summary
-            ? `Stock alerts, ${totalCount.toLocaleString()} total`
-            : 'Stock alerts, loading'}
+            ? `Alerts, ${combinedCount.toLocaleString()} total`
+            : 'Alerts, loading'}
         aria-expanded={open}
         aria-controls="stock-alert-panel"
-        title={error ? `Stock alerts unavailable: ${error}` : 'Stock alerts'}
+        title={error ? `Stock alerts unavailable: ${error}` : 'Stock alerts and developer updates'}
         onClick={openPanel}
         className="relative inline-flex h-9 w-9 items-center justify-center rounded-control border border-border bg-surface text-muted hover:bg-primary/5 hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
@@ -249,7 +344,7 @@ export function StockAlertBell({
             {badgeCount}
           </span>
         )}
-        {unseenKeys.length > 0 && !error && (
+        {(unseenKeys.length > 0 || unreadAnnouncements.length > 0) && !error && (
           <span
             aria-hidden="true"
             className={`absolute left-0 top-0 h-2 w-2 rounded-full bg-danger ring-2 ring-surface ${
@@ -270,18 +365,21 @@ export function StockAlertBell({
         >
           <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-border bg-surface px-4 py-3">
             <div>
-              <h2 className="font-bold text-text">Stock alerts</h2>
+              <h2 className="font-bold text-text">Alerts</h2>
               <p className="text-xs text-muted">
                 {error
                   ? 'Unable to refresh'
                   : summary
-                  ? `${totalCount.toLocaleString()} total · ${summary.out_count.toLocaleString()} out · ${summary.low_count.toLocaleString()} low`
+                  ? `${totalCount.toLocaleString()} stock · ${unreadAnnouncements.length.toLocaleString()} new update(s) · ${summary.out_count.toLocaleString()} out · ${summary.low_count.toLocaleString()} low`
                   : 'Current inventory'}
               </p>
             </div>
             <button
               type="button"
-              onClick={() => void refresh()}
+              onClick={() => {
+                void refresh();
+                void refreshAnnouncements();
+              }}
               disabled={loading}
               className="inline-flex items-center gap-1 rounded-control border border-border px-2.5 py-1.5 text-xs font-semibold text-text hover:bg-primary/5 disabled:opacity-50"
             >
@@ -299,22 +397,30 @@ export function StockAlertBell({
               <div className="h-10 rounded-control bg-border/60" />
             </div>
           ) : error ? (
-            <div role="alert" className="m-4 rounded-control border border-warning/40 bg-warning/10 p-3 text-sm text-text">
-              <p>{error}</p>
-              <button
-                type="button"
-                onClick={() => void refresh()}
-                className="mt-2 rounded-control border border-border px-3 py-1.5 text-xs font-semibold text-text hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              >
-                Retry
-              </button>
+            <div>
+              <div role="alert" className="m-4 rounded-control border border-warning/40 bg-warning/10 p-3 text-sm text-text">
+                <p>{error}</p>
+                <button
+                  type="button"
+                  onClick={() => void refresh()}
+                  className="mt-2 rounded-control border border-border px-3 py-1.5 text-xs font-semibold text-text hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                >
+                  Retry
+                </button>
+              </div>
+              <div className="py-3">{renderDeveloperAnnouncements()}</div>
             </div>
-          ) : totalCount === 0 ? (
-            <p className="px-4 py-8 text-center text-sm text-muted">No stock alerts</p>
+          ) : totalCount === 0 && announcements.length === 0 && !isDesktopMode() ? (
+            <p className="px-4 py-8 text-center text-sm text-muted">No stock alerts or developer updates</p>
           ) : (
             <div className="space-y-4 py-3">
-              {renderSection('Out of stock', 'out', outItems, summary?.out_count ?? 0)}
-              {renderSection('Low stock', 'low', lowItems, summary?.low_count ?? 0)}
+              {totalCount > 0 && (
+                <>
+                  {renderSection('Out of stock', 'out', outItems, summary?.out_count ?? 0)}
+                  {renderSection('Low stock', 'low', lowItems, summary?.low_count ?? 0)}
+                </>
+              )}
+              {renderDeveloperAnnouncements()}
             </div>
           )}
 

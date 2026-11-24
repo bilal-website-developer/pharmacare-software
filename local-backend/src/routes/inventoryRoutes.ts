@@ -77,7 +77,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Database.Datab
         params.push(query.status === 'active' ? 1 : 0);
       }
       if (query.lowStockOnly === 'true') {
-        whereClause += ` AND COALESCE((${activeStock}), 0) <= m.min_stock_alert`;
+        whereClause += ` AND m.is_active = 1 AND COALESCE((${activeStock}), 0) <= m.min_stock_alert`;
       }
 
       const countRow = db.prepare(`
@@ -100,8 +100,9 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Database.Datab
                m.category_id, c.name as category_name,
                m.brand_id, b.name as brand_name_company,
                m.drug_class, m.storage_condition, m.rack_location,
-               m.min_stock_alert, m.requires_prescription, m.is_active,
+               m.min_stock_alert, m.requires_prescription, m.is_active, m.opening_stock_recorded,
                COALESCE((${activeStock}), 0) AS current_stock_smallest_unit,
+               EXISTS (SELECT 1 FROM stock_batches history WHERE history.medicine_id = m.id) AS has_stock_history,
                (SELECT MIN(sb.expiry_date) FROM stock_batches sb
                 WHERE sb.medicine_id = m.id AND sb.quantity_smallest_unit > 0
                   AND sb.status IN ('ACTIVE', 'NEAR_EXPIRY')) AS nearest_expiry,
@@ -160,6 +161,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Database.Datab
         minStockAlert: r.min_stock_alert,
         requiresPrescription: r.requires_prescription === 1,
         isActive: r.is_active === 1,
+        openingStockPromptRequired: r.opening_stock_recorded === 0 && r.has_stock_history === 0,
         currentStockSmallestUnit: r.current_stock_smallest_unit,
         nearestExpiry: r.nearest_expiry,
         mrpPaisa: r.mrp_paisa,
@@ -174,10 +176,10 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Database.Datab
       const stats = db.prepare(`
         SELECT
           SUM(CASE WHEN m.is_active = 1 THEN 1 ELSE 0 END) AS total_active,
-          SUM(CASE WHEN COALESCE(stock.quantity, 0) > 0 AND COALESCE(stock.quantity, 0) <= m.min_stock_alert THEN 1 ELSE 0 END) AS low_stock,
-          SUM(CASE WHEN COALESCE(stock.quantity, 0) = 0 THEN 1 ELSE 0 END) AS out_of_stock,
-          SUM(CASE WHEN stock.expiring > 0 THEN 1 ELSE 0 END) AS expiring_90,
-          ${showCost ? 'SUM(COALESCE(stock.stock_value, 0))' : 'NULL'} AS stock_value_cost_paisa
+          SUM(CASE WHEN m.is_active = 1 AND COALESCE(stock.quantity, 0) > 0 AND COALESCE(stock.quantity, 0) <= m.min_stock_alert THEN 1 ELSE 0 END) AS low_stock,
+          SUM(CASE WHEN m.is_active = 1 AND COALESCE(stock.quantity, 0) = 0 THEN 1 ELSE 0 END) AS out_of_stock,
+          SUM(CASE WHEN m.is_active = 1 AND stock.expiring > 0 THEN 1 ELSE 0 END) AS expiring_90,
+          ${showCost ? 'SUM(CASE WHEN m.is_active = 1 THEN COALESCE(stock.stock_value, 0) ELSE 0 END)' : 'NULL'} AS stock_value_cost_paisa
         FROM medicines m
         LEFT JOIN (
           SELECT medicine_id,
@@ -230,8 +232,8 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Database.Datab
             INSERT INTO medicines (
               id, code, barcode, brand_name, generic_name, strength, category_id, brand_id,
               drug_class, storage_condition, rack_location, min_stock_alert, requires_prescription,
-              is_active, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+              is_active, opening_stock_recorded, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
           `).run(
             medicineId,
             code,
@@ -332,8 +334,8 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Database.Datab
 
       app.post('/api/inventory/products/import-preview', async (request, reply) => {
         const body = request.body as { rows?: unknown };
-        if (!Array.isArray(body?.rows) || body.rows.length > 2000) {
-          return reply.status(400).send({ error: 'Import preview must contain no more than 2000 rows.' });
+        if (!Array.isArray(body?.rows)) {
+          return reply.status(400).send({ error: 'Import preview rows must be an array.' });
         }
         const rows = body.rows as Array<Record<string, unknown>>;
         const duplicateCodes = new Set<string>();
@@ -359,11 +361,18 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Database.Datab
       app.post('/api/inventory/products/import', async (request, reply) => {
         try {
           await request.jwtVerify();
+          const user = request.user as { userId: string; role: string; permissions: string[] };
           const body = request.body as { rows?: unknown };
-          if (!Array.isArray(body.rows) || body.rows.length === 0 || body.rows.length > 2000) {
-            return reply.status(400).send({ error: 'Import must contain between 1 and 2000 product rows.' });
+          if (!Array.isArray(body.rows) || body.rows.length === 0) {
+            return reply.status(400).send({ error: 'Import must contain at least one product row.' });
+          }
+          const hasOpeningStock = body.rows.some((row) => row && typeof row === 'object'
+            && Number((row as Record<string, unknown>).opening_stock_qty) > 0);
+          if (hasOpeningStock && !canViewCost(user.role, user.permissions ?? [])) {
+            return reply.status(403).send({ error: 'Cost-price permission is required to import opening stock.' });
           }
           const now = Math.floor(Date.now() / 1000);
+          const today = localIsoDate();
           const boolValue = (value: unknown, fallback: boolean) => {
             if (value === undefined || value === null || value === '') return fallback;
             const normalized = String(value).trim().toLowerCase();
@@ -399,6 +408,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Database.Datab
                 throw new Error(`Import row ${String(raw.line ?? '')} contains an unsupported classification or storage condition.`);
               }
               const barcode = value('barcode') || null;
+              const isActive = boolValue(raw.is_active, true);
               if (db.prepare('SELECT 1 FROM medicines WHERE code = ? OR (? IS NOT NULL AND barcode = ?)').get(code, barcode, barcode)) {
                 throw new Error(`Import row ${String(raw.line ?? '')} duplicates an existing product code or barcode.`);
               }
@@ -421,8 +431,8 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Database.Datab
                 INSERT INTO medicines (
                   id, code, barcode, brand_name, generic_name, strength, category_id, brand_id,
                   drug_class, storage_condition, rack_location, min_stock_alert, requires_prescription,
-                  is_active, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  is_active, opening_stock_recorded, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
               `).run(
                 medicineId,
                 code,
@@ -437,7 +447,8 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Database.Datab
                 value('rack_location') || null,
                 minStock,
                 boolValue(raw.requires_prescription, false) ? 1 : 0,
-                boolValue(raw.is_active, true) ? 1 : 0,
+                isActive ? 1 : 0,
+                isActive ? 1 : 0,
                 now,
                 now,
               );
@@ -456,12 +467,206 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Database.Datab
                 now,
                 now,
               );
+
+              const openingQuantityValue = value('opening_stock_qty');
+              const openingQuantity = openingQuantityValue === '' ? 0 : Number(openingQuantityValue);
+              const openingBatchNumber = value('opening_batch_number');
+              const openingExpiryDate = value('opening_expiry_date');
+              const openingCostValue = value('opening_cost_paisa');
+              const hasOpeningBatchDetails = Boolean(openingBatchNumber || openingExpiryDate || openingCostValue);
+              if (!Number.isSafeInteger(openingQuantity) || openingQuantity < 0
+                || openingQuantity > 2_147_483_647) {
+                throw new Error(`Import row ${String(raw.line ?? '')} has an invalid opening stock quantity.`);
+              }
+              if (openingQuantity === 0) {
+                if (hasOpeningBatchDetails) {
+                  throw new Error(`Import row ${String(raw.line ?? '')} has batch details but no opening stock quantity.`);
+                }
+                continue;
+              }
+              const expiryTimestamp = Date.parse(`${openingExpiryDate}T00:00:00Z`);
+              if (!openingBatchNumber
+                || !/^\d{4}-\d{2}-\d{2}$/.test(openingExpiryDate)
+                || !Number.isFinite(expiryTimestamp)
+                || new Date(expiryTimestamp).toISOString().slice(0, 10) !== openingExpiryDate
+                || openingExpiryDate <= today) {
+                throw new Error(`Import row ${String(raw.line ?? '')} needs a future opening batch expiry date.`);
+              }
+              const openingCostPaisa = Number(openingCostValue);
+              if (!Number.isSafeInteger(openingCostPaisa) || openingCostPaisa < 0
+                || openingCostPaisa > 2_147_483_647) {
+                throw new Error(`Import row ${String(raw.line ?? '')} needs a valid opening batch cost in paisa.`);
+              }
+              const openingQuantitySmallestUnit = openingQuantity * conversionFactor;
+              if (!Number.isSafeInteger(openingQuantitySmallestUnit)
+                || openingQuantitySmallestUnit > 2_147_483_647) {
+                throw new Error(`Import row ${String(raw.line ?? '')} exceeds the supported opening stock limit.`);
+              }
+              const batchId = crypto.randomUUID();
+              db.prepare(`
+                INSERT INTO stock_batches (
+                  id, medicine_id, batch_number, expiry_date, received_date, cost_price_paisa,
+                  mrp_paisa, quantity_smallest_unit, status, supplier_id, supplier_name, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NULL, NULL, ?, ?)
+              `).run(
+                batchId,
+                medicineId,
+                openingBatchNumber,
+                openingExpiryDate,
+                today,
+                Math.round(openingCostPaisa / conversionFactor),
+                Math.round(pricePaisa / conversionFactor),
+                openingQuantitySmallestUnit,
+                now,
+                now,
+              );
+              db.prepare(`
+                INSERT INTO stock_movements (
+                  id, medicine_id, batch_id, movement_type, quantity_smallest_units,
+                  balance_after, reference_id, notes, created_by, created_at
+                ) VALUES (?, ?, ?, 'INITIAL', ?, ?, NULL, ?, ?, ?)
+              `).run(
+                crypto.randomUUID(),
+                medicineId,
+                batchId,
+                openingQuantitySmallestUnit,
+                openingQuantitySmallestUnit,
+                'Opening stock imported from product CSV',
+                user.userId,
+                now,
+              );
+              db.prepare('UPDATE medicines SET opening_stock_recorded = 1 WHERE id = ?').run(medicineId);
             }
           });
           transaction();
           return reply.send({ importedCount: body.rows.length });
         } catch (error) {
           return reply.status(400).send({ error: error instanceof Error ? error.message : 'Could not import products.' });
+        }
+      });
+
+      app.post('/api/inventory/products/:id/activate-initial-stock', async (request, reply) => {
+        try {
+          await request.jwtVerify();
+          const user = request.user as { userId: string; role: string; permissions: string[] };
+          const { id } = request.params as { id: string };
+          const body = request.body as {
+            openingStockQty?: unknown;
+            batchNumber?: unknown;
+            expiryDate?: unknown;
+            costPricePaisa?: unknown;
+          };
+          const openingQuantity = body?.openingStockQty;
+          if (!Number.isSafeInteger(openingQuantity) || Number(openingQuantity) < 0
+            || Number(openingQuantity) > 2_147_483_647) {
+            return reply.status(400).send({ error: 'Enter a whole opening-stock quantity of zero or more.' });
+          }
+
+          const product = db.prepare(`
+            SELECT medicine.id, medicine.is_active, medicine.opening_stock_recorded,
+                   EXISTS (SELECT 1 FROM stock_batches WHERE medicine_id = medicine.id) AS has_stock_history,
+                   COALESCE((SELECT conversion_factor FROM medicine_units
+                             WHERE medicine_id = medicine.id AND is_active = 1
+                             ORDER BY is_default_sale_unit DESC, id LIMIT 1), 1) AS conversion_factor,
+                   COALESCE((SELECT price_per_unit_paisa FROM medicine_units
+                             WHERE medicine_id = medicine.id AND is_active = 1
+                             ORDER BY is_default_sale_unit DESC, id LIMIT 1), 0) AS mrp_paisa
+            FROM medicines AS medicine
+            WHERE medicine.id = ? AND medicine.deleted_at IS NULL
+          `).get(id) as {
+            id: string;
+            is_active: number;
+            opening_stock_recorded: number;
+            has_stock_history: number;
+            conversion_factor: number;
+            mrp_paisa: number;
+          } | undefined;
+          if (!product) return reply.status(404).send({ error: 'Product not found.' });
+
+          const now = Math.floor(Date.now() / 1000);
+          const needsInitialStock = product.opening_stock_recorded === 0 && product.has_stock_history === 0;
+          if (!needsInitialStock) {
+            db.prepare(`
+              UPDATE medicines SET is_active = 1, opening_stock_recorded = 1, updated_at = ?
+              WHERE id = ?
+            `).run(now, id);
+            return reply.send({ success: true, openingStockRecorded: true, alreadyRecorded: true });
+          }
+
+          const quantity = Number(openingQuantity);
+          const batchNumber = typeof body.batchNumber === 'string' ? body.batchNumber.trim() : '';
+          const expiryDate = typeof body.expiryDate === 'string' ? body.expiryDate.trim() : '';
+          if (quantity === 0 && (batchNumber || expiryDate || body.costPricePaisa !== undefined && body.costPricePaisa !== null && body.costPricePaisa !== '')) {
+            return reply.status(400).send({ error: 'Batch details can only be entered with a positive opening-stock quantity.' });
+          }
+
+          let quantitySmallestUnit = 0;
+          let costPricePaisa = 0;
+          let mrpPaisa = 0;
+          if (quantity > 0) {
+            if (!canViewCost(user.role, user.permissions ?? [])) {
+              return reply.status(403).send({ error: 'Cost-price permission is required to record opening stock.' });
+            }
+            if (!batchNumber || batchNumber.length > 100) {
+              return reply.status(400).send({ error: 'Enter a batch number of 1 to 100 characters.' });
+            }
+            const expiryTimestamp = Date.parse(`${expiryDate}T00:00:00Z`);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(expiryDate)
+              || !Number.isFinite(expiryTimestamp)
+              || new Date(expiryTimestamp).toISOString().slice(0, 10) !== expiryDate
+              || expiryDate <= localIsoDate()) {
+              return reply.status(400).send({ error: 'Enter a valid future batch expiry date.' });
+            }
+            if (!Number.isSafeInteger(body.costPricePaisa)
+              || Number(body.costPricePaisa) < 0
+              || Number(body.costPricePaisa) > 2_147_483_647) {
+              return reply.status(400).send({ error: 'Enter a valid opening cost in paisa per sale unit.' });
+            }
+            quantitySmallestUnit = quantity * product.conversion_factor;
+            if (!Number.isSafeInteger(quantitySmallestUnit) || quantitySmallestUnit > 2_147_483_647) {
+              return reply.status(400).send({ error: 'Opening stock exceeds the supported quantity limit.' });
+            }
+            costPricePaisa = Math.round(Number(body.costPricePaisa) / product.conversion_factor);
+            mrpPaisa = Math.round(product.mrp_paisa / product.conversion_factor);
+          }
+
+          const transaction = db.transaction(() => {
+            const confirmed = db.prepare(`
+              UPDATE medicines SET is_active = 1, opening_stock_recorded = 1, updated_at = ?
+              WHERE id = ? AND is_active = 0 AND opening_stock_recorded = 0
+                AND NOT EXISTS (
+                  SELECT 1 FROM stock_batches WHERE stock_batches.medicine_id = medicines.id
+                )
+            `).run(now, id);
+            if (confirmed.changes !== 1) {
+              throw new Error('Opening stock was already confirmed. Refresh the product list and try again.');
+            }
+            if (quantity > 0) {
+              const batchId = crypto.randomUUID();
+              db.prepare(`
+                INSERT INTO stock_batches (
+                  id, medicine_id, batch_number, expiry_date, received_date, cost_price_paisa,
+                  mrp_paisa, quantity_smallest_unit, status, supplier_id, supplier_name, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NULL, NULL, ?, ?)
+              `).run(
+                batchId, id, batchNumber, expiryDate, localIsoDate(),
+                costPricePaisa, mrpPaisa, quantitySmallestUnit, now, now,
+              );
+              db.prepare(`
+                INSERT INTO stock_movements (
+                  id, medicine_id, batch_id, movement_type, quantity_smallest_units,
+                  balance_after, reference_id, notes, created_by, created_at
+                ) VALUES (?, ?, ?, 'INITIAL', ?, ?, NULL, ?, ?, ?)
+              `).run(
+                crypto.randomUUID(), id, batchId, quantitySmallestUnit, quantitySmallestUnit,
+                'Opening stock entered during first product activation', user.userId, now,
+              );
+            }
+          });
+          transaction();
+          return reply.send({ success: true, openingStockRecorded: true, alreadyRecorded: false });
+        } catch (error) {
+          return reply.status(400).send({ error: error instanceof Error ? error.message : 'Could not activate product.' });
         }
       });
 
@@ -479,6 +684,23 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Database.Datab
           const now = Math.floor(Date.now() / 1000);
           const transaction = db.transaction(() => {
             if (body.action === 'deactivate' || body.action === 'activate') {
+              if (body.action === 'activate') {
+                const requiresInitialStock = db.prepare(`
+                  SELECT medicine.id
+                  FROM medicines AS medicine
+                  WHERE medicine.id IN (${ids.map(() => '?').join(',')})
+                    AND medicine.is_active = 0
+                    AND medicine.opening_stock_recorded = 0
+                    AND medicine.deleted_at IS NULL
+                    AND NOT EXISTS (
+                      SELECT 1 FROM stock_batches WHERE stock_batches.medicine_id = medicine.id
+                    )
+                  LIMIT 1
+                `).get(...ids);
+                if (requiresInitialStock) {
+                  throw new Error('Record or confirm opening stock before first activation.');
+                }
+              }
               if (body.action === 'deactivate') {
                 const products = db.prepare(`
                   SELECT id, brand_name FROM medicines

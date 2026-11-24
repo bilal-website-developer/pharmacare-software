@@ -123,7 +123,7 @@ export const TopNav: React.FC<TopNavProps> = ({
   };
 
   return (
-    <header className={`sticky top-0 z-30 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b border-border bg-white/90 shadow-xs backdrop-blur-md sm:gap-3 ${
+    <header className={`sticky top-0 z-30 grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b border-border bg-white/90 shadow-xs backdrop-blur-md sm:gap-3 ${
       compact ? 'px-3 py-1.5 sm:px-4' : 'px-4 py-2.5 sm:px-6'
     }`}>
       <div className="flex min-w-0 items-center gap-2">
@@ -141,7 +141,7 @@ export const TopNav: React.FC<TopNavProps> = ({
         </span>
       </div>
 
-      <div className="max-w-[35vw] truncate text-center text-[10px] font-semibold uppercase tracking-wider text-muted sm:max-w-[30vw]">
+      <div className="min-w-0 max-w-[35vw] truncate text-center text-[10px] font-semibold uppercase tracking-wider text-muted sm:max-w-[30vw]">
         {activeTitle}
       </div>
 

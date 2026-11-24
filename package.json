@@ -19,6 +19,10 @@
     "desktop:local": "node scripts/desktop-local.mjs start",
     "desktop:local:package": "node scripts/desktop-local.mjs package",
     "desktop:e2e": "tsx --test tests/desktop.e2e.test.ts",
+    "desktop:test-updates": "tsx --test desktop-app/src/main/updateManifest.test.ts",
+    "test:central-api-url": "tsx --test desktop-app/src/main/centralApiUrl.test.ts",
+    "desktop:update-keys:generate": "node scripts/generate-update-keys.mjs",
+    "desktop:update-manifest": "node scripts/create-update-manifest.mjs",
     "desktop:package": "node scripts/check-desktop-package-config.mjs && npm run test:desktop-icon && npm run desktop:renderer && npm run package --workspace=desktop-app",
     "central:start": "npm start --workspace=central-backend",
     "central:dev": "node central-backend/scripts/start-dev.mjs",
@@ -44,6 +48,7 @@
     "test:pos-catalog": "tsx --test src/data/posCatalogLogic.test.ts",
     "test:product-filters": "tsx --test src/components/inventory/productFilterLogic.test.ts",
     "test:master-data": "tsx --test src/components/masterDataSimilarity.test.ts",
+    "test:master-data-csv": "tsx --test src/components/masterDataCsv.test.ts",
     "test:print-snapshot": "tsx --test src/utils/printSnapshot.test.ts",
     "test:print-request-editor": "tsx --test src/utils/printRequestEditor.test.ts",
     "test:trash-bin": "tsx --test src/utils/trashBin.test.ts",
@@ -68,7 +73,7 @@
     "test:approval-automation": "tsx --test src/data/approvalAutomation.test.ts src/data/saleReturns.test.ts src/utils/printRequestTypes.test.ts",
     "test:invoice-input": "tsx --test src/utils/returnInvoiceInput.test.ts",
     "test:backends": "npm test --workspace=local-backend && npm test --workspace=central-backend",
-    "test": "npm run test:fefo && npm run test:receipt && npm run test:table-export && npm run test:app-routing && npm run test:desktop-icon && npm run test:desktop-package-config && npm run test:receipt-qr && npm run test:demo-receipt && npm run test:inventory-ui && npm run test:stock-inventory && npm run test:inventory-products && npm run test:stock-alerts && npm run test:pos-catalog && npm run test:product-filters && npm run test:master-data && npm run test:print-snapshot && npm run test:print-request-editor && npm run test:trash-bin && npm run test:store-settings && npm run test:shop-settings && npm run test:shop-logo && npm run test:demo-data && npm run test:demo-preview && npm run test:install-prompt && npm run test:pos-customer && npm run test:held-bills && npm run test:payment-details && npm run test:sales-profit && npm run test:approval-automation && npm run test:invoice-input && npm run test:report && npm run test:discount && npm run test:barcode-scanner && npm run test:labels && npm run test:permissions && npm run test:sidebar && npm run test:manage-users-policy && npm run test:customer-display && npm run test:backends"
+    "test": "npm run test:fefo && npm run test:receipt && npm run test:table-export && npm run test:app-routing && npm run test:desktop-icon && npm run test:desktop-package-config && npm run desktop:test-updates && npm run test:central-api-url && npm run test:receipt-qr && npm run test:demo-receipt && npm run test:inventory-ui && npm run test:stock-inventory && npm run test:inventory-products && npm run test:stock-alerts && npm run test:pos-catalog && npm run test:product-filters && npm run test:master-data && npm run test:master-data-csv && npm run test:print-snapshot && npm run test:print-request-editor && npm run test:trash-bin && npm run test:store-settings && npm run test:shop-settings && npm run test:shop-logo && npm run test:demo-data && npm run test:demo-preview && npm run test:install-prompt && npm run test:pos-customer && npm run test:held-bills && npm run test:payment-details && npm run test:sales-profit && npm run test:approval-automation && npm run test:invoice-input && npm run test:report && npm run test:discount && npm run test:barcode-scanner && npm run test:labels && npm run test:permissions && npm run test:sidebar && npm run test:manage-users-policy && npm run test:customer-display && npm run test:backends"
   },
   "dependencies": {
     "@e965/xlsx": "^0.20.3",

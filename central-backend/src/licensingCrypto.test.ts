@@ -36,6 +36,7 @@ test('license token signs the expected claims with the configured secret', () =>
   });
   assert.deepEqual(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')), {
     ...claims,
+    warningDays: 14,
     enabledPages: ALL_LICENSE_PAGES,
     enabledFeatures: ALL_LICENSE_FEATURES,
   });

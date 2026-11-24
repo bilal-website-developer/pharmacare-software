@@ -1604,7 +1604,7 @@ function PharmacyWorkspace({
         />
 
         {/* Dynamic Screen View */}
-        <main className={`pharmacy-page flex-1 ${
+        <main className={`pharmacy-page min-w-0 flex-1 ${
           activeItem === 'pos'
             ? 'min-h-0 overflow-y-auto p-2 lg:overflow-hidden'
             : 'overflow-y-auto p-4 sm:p-6'
@@ -1802,6 +1802,12 @@ function PharmacyWorkspace({
                     || (Boolean(supabase) && shopSettingsLoaded && shopSettings !== null))
                     && hasFeature('settings_operations')
                     && (!supabase || canEditSettingsSection(currentRole, session.permissions, 'settings_operations'))}
+                  canImportProducts={canPage('products') && can('products')}
+                  canExportProducts={canPage('products')}
+                  canImportOpeningStock={currentRole === UserRole.ADMIN
+                    || currentRole === UserRole.MANAGER
+                    || (currentRole === UserRole.ACCOUNTANT
+                      && (can('purchase_history') || can('reports')))}
                   canEditApprovalAutomation={Boolean(supabase)
                     && hasFeature('settings_operations')
                     && currentRole === UserRole.ADMIN

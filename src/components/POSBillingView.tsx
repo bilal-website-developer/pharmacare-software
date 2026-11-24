@@ -53,9 +53,9 @@ import { postSale, type PostSaleInput } from '../data/sales';
 import { SaleReturnsPanel } from './returns/SaleReturnsPanel';
 import { DirectSaleReturnPanel } from './returns/DirectSaleReturnPanel';
 import { PaymentProviderSelect } from './PaymentProviderSelect';
-import { isDesktopMode } from '../services/localApi';
+import { isDesktopMode, localApiRequest } from '../services/localApi';
 import { isValidOptionalPhone, resolvePosCustomerName } from '../utils/posCustomer';
-import { readHeldBills, writeHeldBills, type HeldBill } from '../utils/heldBills';
+import { readHeldBills, validateHeldBills, writeHeldBills, type HeldBill } from '../utils/heldBills';
 import { getSplitPaymentSummary, parsePaisaAmount } from '../utils/splitPayments';
 import {
   getPaymentMethodForProvider,
@@ -143,6 +143,7 @@ export const POSBillingView: React.FC<POSBillingViewProps> = ({
   const [heldBillsError, setHeldBillsError] = useState('');
   const [showHeldBills, setShowHeldBills] = useState(false);
   const [heldBillsNow, setHeldBillsNow] = useState(Date.now);
+  const savingHeldBillsRef = useRef(false);
   const heldBillsPanelRef = useRef<HTMLDivElement>(null);
   const holdCurrentCartRef = useRef<() => void>(() => undefined);
 
@@ -200,11 +201,26 @@ export const POSBillingView: React.FC<POSBillingViewProps> = ({
   }, [cart.length]);
 
   useEffect(() => {
+    let active = true;
     setHeldBills([]);
     setHeldBillsUserId(disablePersistentHeldBills ? currentUserId : '');
     setHeldBillsError('');
     setShowHeldBills(false);
-    if (disablePersistentHeldBills) return;
+    if (disablePersistentHeldBills) return () => { active = false; };
+    if (isDesktopMode()) {
+      void localApiRequest<{ items: unknown[] }>('/api/workflow-drafts/held-bills')
+        .then((response) => {
+          if (!active) return;
+          setHeldBills(validateHeldBills(response.items));
+          setHeldBillsUserId(currentUserId);
+        })
+        .catch((error: unknown) => {
+          if (!active) return;
+          setHeldBillsError(error instanceof Error ? error.message : 'Could not load held bills.');
+          setHeldBillsUserId(currentUserId);
+        });
+      return () => { active = false; };
+    }
     try {
       setHeldBills(readHeldBills(currentUserId));
       setHeldBillsUserId(currentUserId);
@@ -212,6 +228,7 @@ export const POSBillingView: React.FC<POSBillingViewProps> = ({
       setHeldBillsError(error instanceof Error ? error.message : 'Could not load held bills.');
       setHeldBillsUserId(currentUserId);
     }
+    return () => { active = false; };
   }, [currentUserId, disablePersistentHeldBills]);
 
   useEffect(() => {
@@ -1260,23 +1277,34 @@ export const POSBillingView: React.FC<POSBillingViewProps> = ({
     });
   };
 
-  const saveHeldBillList = (nextBills: HeldBill[]) => {
+  const saveHeldBillList = async (nextBills: HeldBill[]): Promise<boolean> => {
     if (heldBillsUserId !== currentUserId || heldBillsError) {
       setHeldBillsError(heldBillsError || 'Held bills are still loading. Try again in a moment.');
       return false;
     }
-    if (disablePersistentHeldBills) {
-      setHeldBills(nextBills);
-      return true;
+    if (savingHeldBillsRef.current) {
+      setHeldBillsError('A held-bill update is still saving. Try again in a moment.');
+      return false;
     }
+    savingHeldBillsRef.current = true;
     try {
-      writeHeldBills(currentUserId, nextBills);
+      if (disablePersistentHeldBills) {
+        setHeldBills(nextBills);
+        return true;
+      }
+      if (isDesktopMode()) {
+        await localApiRequest('/api/workflow-drafts/held-bills', 'PUT', { items: nextBills });
+      } else {
+        writeHeldBills(currentUserId, nextBills);
+      }
       setHeldBills(nextBills);
       setHeldBillsError('');
       return true;
     } catch (error) {
       setHeldBillsError(error instanceof Error ? error.message : 'Could not save held bills.');
       return false;
+    } finally {
+      savingHeldBillsRef.current = false;
     }
   };
 
@@ -1300,27 +1328,27 @@ export const POSBillingView: React.FC<POSBillingViewProps> = ({
     totalPaisa,
   });
 
-  const handleHoldCurrentBill = () => {
+  const handleHoldCurrentBill = async () => {
     if (isPostingSale || isPostingSaleRef.current) return;
     if (cart.length === 0) {
       setSaleError('Add at least one item before holding a bill.');
       return;
     }
-    if (!saveHeldBillList([createCurrentHeldBill(), ...heldBills])) return;
+    if (!await saveHeldBillList([createCurrentHeldBill(), ...heldBills])) return;
 
     clearCartContents();
     setDisplayThankYou(false);
     setActiveOptions(null);
   };
-  holdCurrentCartRef.current = handleHoldCurrentBill;
+  holdCurrentCartRef.current = () => { void handleHoldCurrentBill(); };
 
-  const handleResumeHeldBill = (heldBill: HeldBill) => {
+  const handleResumeHeldBill = async (heldBill: HeldBill) => {
     if (isPostingSale || isPostingSaleRef.current) return;
     const nextBills = heldBills.filter((bill) => bill.id !== heldBill.id);
     if (cart.length > 0) {
       nextBills.unshift(createCurrentHeldBill());
     }
-    if (!saveHeldBillList(nextBills)) return;
+    if (!await saveHeldBillList(nextBills)) return;
 
     const customerStillExists = customers.some((customer) => customer.id === heldBill.customerId);
     setCart(heldBill.cart.map((item) => ({
@@ -1355,10 +1383,10 @@ export const POSBillingView: React.FC<POSBillingViewProps> = ({
     setSaleError('');
   };
 
-  const handleDeleteHeldBill = (heldBill: HeldBill) => {
+  const handleDeleteHeldBill = async (heldBill: HeldBill) => {
     const customerName = heldBill.customerName || 'this customer';
     if (!window.confirm(`Delete the held bill for ${customerName}? This cannot be undone.`)) return;
-    saveHeldBillList(heldBills.filter((bill) => bill.id !== heldBill.id));
+    await saveHeldBillList(heldBills.filter((bill) => bill.id !== heldBill.id));
   };
 
   const openCustomerDisplay = () => {
@@ -1553,14 +1581,14 @@ export const POSBillingView: React.FC<POSBillingViewProps> = ({
                               <div className="mt-2 flex gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => handleResumeHeldBill(heldBill)}
+                                  onClick={() => { void handleResumeHeldBill(heldBill); }}
                                   className="flex-1 rounded-control bg-primary px-2 py-1.5 text-[10px] font-bold text-white hover:brightness-95"
                                 >
                                   Resume
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleDeleteHeldBill(heldBill)}
+                                  onClick={() => { void handleDeleteHeldBill(heldBill); }}
                                   className="flex-1 rounded-control border border-danger/40 px-2 py-1.5 text-[10px] font-bold text-danger hover:bg-danger/5"
                                 >
                                   <Trash2 className="mr-1 inline h-3 w-3" />

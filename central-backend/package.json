@@ -6,7 +6,7 @@
   "scripts": {
     "start": "tsx src/server.ts",
     "build": "tsc",
-    "test": "tsx --test src/licensingCrypto.test.ts src/devServer.test.ts src/reissueActivation.test.ts"
+    "test": "tsx --test src/licensingCrypto.test.ts src/licensePolicy.test.ts src/devServer.test.ts src/reissueActivation.test.ts ../supabase/functions/central-licensing/handler.test.ts ../supabase/functions/central-licensing/schema.test.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.4.3",

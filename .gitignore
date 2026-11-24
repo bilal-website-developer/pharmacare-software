@@ -12,6 +12,7 @@ release/
 desktop-app/renderer/
 central-backend/.dev/
 central-backend/.production-keys/
+desktop-app/.update-keys/
 *.db
 *.db-wal
 *.db-shm

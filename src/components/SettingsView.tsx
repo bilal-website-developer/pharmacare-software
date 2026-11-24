@@ -59,6 +59,7 @@ import {
   updateApprovalAutomationSettings,
   type ApprovalAutomationSettings,
 } from '../data/approvalAutomation';
+import { SettingsProductCsv } from './SettingsProductCsv';
 
 const SETTINGS_STORAGE_KEY = 'pharma-care.shopProfile';
 type OperationalLimits = Pick<
@@ -104,6 +105,9 @@ interface SettingsViewProps {
   canLoadDemoData: boolean;
   canEditOperationalSettings: boolean;
   canEditOperationalLimits: boolean;
+  canImportProducts: boolean;
+  canExportProducts: boolean;
+  canImportOpeningStock: boolean;
   canEditApprovalAutomation: boolean;
   operationalLimits: OperationalLimits | null;
   onOperationalLimitsChange: (limits: OperationalLimits) => Promise<boolean>;
@@ -131,6 +135,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   canLoadDemoData,
   canEditOperationalSettings,
   canEditOperationalLimits,
+  canImportProducts,
+  canExportProducts,
+  canImportOpeningStock,
   canEditApprovalAutomation,
   operationalLimits,
   onOperationalLimitsChange,
@@ -789,6 +796,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
         </section>
       )}
+      <SettingsProductCsv
+        canImportProducts={canImportProducts}
+        canExportProducts={canExportProducts}
+        canImportOpeningStock={canImportOpeningStock}
+      />
       {operationalSettingsError && (
         <p role="alert" className="rounded-control border border-warning bg-warning/15 px-3 py-2 text-sm font-semibold text-text">
           {operationalSettingsError}

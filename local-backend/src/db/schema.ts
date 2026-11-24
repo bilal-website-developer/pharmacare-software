@@ -62,6 +62,7 @@ export function initializeSchema(db: Database.Database): void {
       min_stock_alert INTEGER NOT NULL DEFAULT 0,
       requires_prescription INTEGER NOT NULL DEFAULT 0,
       is_active INTEGER NOT NULL DEFAULT 1,
+      opening_stock_recorded INTEGER NOT NULL DEFAULT 0,
       deleted_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
@@ -580,5 +581,53 @@ export function initializeSchema(db: Database.Database): void {
   db.prepare(`
     INSERT OR IGNORE INTO schema_migrations (version, applied_at)
     VALUES (9, ?)
+  `).run(Math.floor(Date.now() / 1000));
+
+  const medicineColumns = new Set(
+    (db.pragma('table_info(medicines)') as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!medicineColumns.has('opening_stock_recorded')) {
+    db.exec('ALTER TABLE medicines ADD COLUMN opening_stock_recorded INTEGER NOT NULL DEFAULT 0');
+  }
+  db.exec(`
+    UPDATE medicines
+    SET opening_stock_recorded = 1
+    WHERE is_active = 1
+       OR EXISTS (SELECT 1 FROM stock_batches WHERE stock_batches.medicine_id = medicines.id)
+  `);
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+    VALUES (10, ?)
+  `).run(Math.floor(Date.now() / 1000));
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS developer_announcements (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      published_at TEXT NOT NULL,
+      received_at INTEGER NOT NULL,
+      read_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_developer_announcements_published
+      ON developer_announcements(published_at DESC);
+  `);
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+    VALUES (11, ?)
+  `).run(Math.floor(Date.now() / 1000));
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_workflow_drafts (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      workflow TEXT NOT NULL CHECK(workflow IN ('held-bills', 'purchase-drafts')),
+      items TEXT NOT NULL DEFAULT '[]',
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, workflow)
+    );
+  `);
+  db.prepare(`
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+    VALUES (12, ?)
   `).run(Math.floor(Date.now() / 1000));
 }

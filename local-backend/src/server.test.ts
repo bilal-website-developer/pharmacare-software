@@ -109,6 +109,65 @@ test('Phase 1: Local Backend & SQLite Core Verification', async (t) => {
     assert.equal(deniedWrite.statusCode, 403);
   });
 
+  await t.test('3a. Protected routes use current database role and permissions, not stale JWT claims', async () => {
+    const user = await createLocalUser(db, {
+      username: 'staleclaimuser',
+      plainTextPassword: 'SecureManagerPassword123!',
+      role: 'manager',
+      fullName: 'Manager with stale token',
+      permissions: ['settings'],
+    });
+    const stalePermissionToken = app.jwt.sign({
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+      permissions: ['settings'],
+    });
+    const missingPermissionToken = app.jwt.sign({
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+    });
+    const staleRoleToken = app.jwt.sign({
+      userId: user.id,
+      username: user.username,
+      role: 'admin',
+      permissions: ['settings'],
+    });
+    db.prepare('UPDATE users SET permissions = ? WHERE id = ?').run('[]', user.id);
+    const missingPermissionResponse = await app.inject({
+      method: 'GET',
+      url: '/api/settings/shop',
+      headers: { authorization: `Bearer ${missingPermissionToken}` },
+    });
+    assert.equal(missingPermissionResponse.statusCode, 401);
+    const stalePermissionResponse = await app.inject({
+      method: 'GET',
+      url: '/api/settings/shop',
+      headers: { authorization: `Bearer ${stalePermissionToken}` },
+    });
+    assert.equal(stalePermissionResponse.statusCode, 401);
+    const staleRoleResponse = await app.inject({
+      method: 'GET',
+      url: '/api/settings/shop',
+      headers: { authorization: `Bearer ${staleRoleToken}` },
+    });
+    assert.equal(staleRoleResponse.statusCode, 401);
+    const inactiveToken = app.jwt.sign({
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+      permissions: [],
+    });
+    db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(user.id);
+    const inactiveResponse = await app.inject({
+      method: 'GET',
+      url: '/api/settings/shop',
+      headers: { authorization: `Bearer ${inactiveToken}` },
+    });
+    assert.equal(inactiveResponse.statusCode, 401);
+  });
+
   await t.test('4. Existing local user data migrates to the Seller role safely', () => {
     const legacyDb = createDatabaseConnection(':memory:');
     try {
@@ -192,6 +251,19 @@ test('Phase 1: Local Backend & SQLite Core Verification', async (t) => {
     });
     assert.equal(planDenied.statusCode, 403);
     assert.match(planDenied.json().error, /not included in the pharmacy license plan/i);
+    recordSuccessfulCheckin(db, createTestLicenseToken({
+      graceDays: 10,
+      warningDays: 3,
+    }), 'HW-UUID-1234');
+    db.prepare('UPDATE license_store SET last_verified_online = ? WHERE id = 1')
+      .run(Math.floor(Date.now() / 1000) - 7 * 86400);
+    assert.equal(checkLicenseStatus(db).status, 'WARNING');
+    db.prepare('UPDATE license_store SET last_verified_online = ? WHERE id = 1')
+      .run(Math.floor(Date.now() / 1000) - 10 * 86400);
+    assert.equal(checkLicenseStatus(db).status, 'RESTRICTED');
+    db.prepare('UPDATE license_store SET last_verified_online = ? WHERE id = 1')
+      .run(Math.floor(Date.now() / 1000) - 10 * 86400 - 1);
+    assert.equal(checkLicenseStatus(db).status, 'RESTRICTED');
     recordSuccessfulCheckin(db, createTestLicenseToken(), 'HW-UUID-1234');
 
     const storedToken = (db.prepare('SELECT license_token FROM license_store WHERE id = 1').get() as { license_token: string }).license_token;

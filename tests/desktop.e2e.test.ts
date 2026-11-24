@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -93,6 +93,21 @@ async function findFile(rootPath: string, fileName: string): Promise<string | nu
   return null;
 }
 
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.removeListener('exit', onExit);
+      reject(new Error('Installed Pharma Care process did not exit before uninstall.'));
+    }, timeoutMs);
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    child.once('exit', onExit);
+  });
+}
+
 test('desktop roles, entitlements, offline workflows, and installed-app retention', { timeout: 1_800_000 }, async (t) => {
   const trace = (message: string) => {
     if (process.env.PHARMA_E2E_TRACE === 'true') t.diagnostic(message);
@@ -174,6 +189,7 @@ test('desktop roles, entitlements, offline workflows, and installed-app retentio
 
     const navigation = page.getByRole('navigation', { name: 'Main navigation' });
     await navigation.waitFor();
+    await page.setViewportSize({ width: 1100, height: 800 });
     const screens = [
       ['Dashboard', '/'],
       ['POS Billing', '/pos'],
@@ -211,8 +227,45 @@ test('desktop roles, entitlements, offline workflows, and installed-app retentio
     for (const [label, route] of screens) {
       await navigation.getByRole('button', { name: label, exact: true }).click();
       await assertScreenIsUsable(page, route);
+      if (label === 'Dashboard') {
+        await page.waitForFunction(() => {
+          const label = Array.from(document.querySelectorAll('span'))
+            .find((element) => element.textContent?.trim() === "Today's Profit (Rs)");
+          const cardText = label?.parentElement?.parentElement?.textContent || '';
+          return /Rs\.\s*0(?:\D|$)/.test(cardText);
+        });
+        const profitCardText = await page.getByText("Today's Profit (Rs)", { exact: true })
+          .locator('xpath=../..').innerText();
+        assert.match(profitCardText, /Rs\.\s*0(?:\D|$)/);
+        assert.doesNotMatch(profitCardText, /setup required|open analytics/i);
+        const layout = await page.evaluate(() => {
+          const main = document.querySelector('main.pharmacy-page');
+          const header = document.querySelector('header.sticky');
+          return {
+            mainFits: !!main && main.scrollWidth <= main.clientWidth + 1,
+            headerFits: !!header && header.scrollWidth <= header.clientWidth + 1,
+          };
+        });
+        assert.equal(layout.mainFits, true, 'Dashboard should not clip right-side metrics.');
+        assert.equal(layout.headerFits, true, 'Top navigation should fit the window width.');
+      }
     }
     trace('Admin navigation passed.');
+    await localApi(page, {
+      path: '/api/license/announcements',
+      method: 'POST',
+      body: {
+        announcements: [{
+          id: randomUUID(),
+          title: 'E2E developer release notice',
+          body: 'A new stability update is ready.',
+          published_at: new Date().toISOString(),
+        }],
+      },
+    });
+    await page.getByRole('button', { name: /^Alerts,/ }).click();
+    await page.getByRole('heading', { name: 'Developer updates' }).waitFor();
+    await page.getByText('E2E developer release notice', { exact: true }).waitFor();
 
     const category = await localApi<{ id: string }>(page, {
       path: '/api/master-data/values',
@@ -289,6 +342,45 @@ test('desktop roles, entitlements, offline workflows, and installed-app retentio
     });
     const savedProduct = products.products.find((item) => item.id === product.id);
     assert.ok(savedProduct?.units[0]?.id, 'medicine unit was not saved');
+    const inactiveCatalogImport = await localApi<{ importedCount: number }>(page, {
+      path: '/api/inventory/products/import',
+      method: 'POST',
+      body: {
+        rows: [{
+          line: 2,
+          code: 'E2E-INACTIVE-001',
+          brand_name: 'E2E Inactive Catalog Product',
+          generic_name: 'E2E Inactive Generic',
+          category: 'E2E Category',
+          company: 'E2E Manufacturer',
+          unit_name: 'Bottle',
+          conversion_factor: '10',
+          price_paisa: '1500',
+          is_active: 'false',
+        }],
+      },
+    });
+    assert.equal(inactiveCatalogImport.importedCount, 1);
+    await navigation.getByRole('button', { name: 'Products', exact: true }).click();
+    await page.getByLabel('Filter active status').selectOption('inactive');
+    const inactiveProductRow = page.getByRole('row').filter({ hasText: 'E2E Inactive Catalog Product' });
+    await inactiveProductRow.waitFor({ state: 'visible' });
+    await inactiveProductRow.getByLabel('Row actions').click();
+    await page.getByRole('button', { name: 'Activate product', exact: true }).click();
+    const openingStockDialog = page.getByRole('dialog', { name: 'Activate E2E Inactive Catalog Product' });
+    await openingStockDialog.getByLabel('Opening stock quantity').fill('2');
+    await openingStockDialog.getByLabel('Batch number *').fill('E2E-INITIAL-1');
+    await openingStockDialog.getByLabel('Expiry date *').fill('2099-12-31');
+    await openingStockDialog.getByLabel('Cost per sale unit (paisa) *').fill('250');
+    await openingStockDialog.getByRole('button', { name: 'Activate product', exact: true }).click();
+    await openingStockDialog.waitFor({ state: 'detached' });
+    const activatedCatalog = await localApi<{ products: Array<{ id: string; currentStockSmallestUnit: number }> }>(page, {
+      path: '/api/inventory/products?status=active&search=E2E-INACTIVE-001',
+    });
+    assert.equal(activatedCatalog.products.length, 1);
+    assert.equal(activatedCatalog.products[0].currentStockSmallestUnit, 20);
+    await page.getByLabel('Filter active status').selectOption('active');
+
     await localApi(page, {
       path: '/api/inventory/products',
       method: 'POST',
@@ -721,6 +813,35 @@ test('desktop roles, entitlements, offline workflows, and installed-app retentio
 
     await navigation.getByRole('button', { name: 'Settings', exact: true }).click();
     await assertScreenIsUsable(page, '/settings');
+    await page.getByRole('heading', { name: 'Product CSV import & export' }).waitFor();
+    const settingsProductCsv = [
+      'code,barcode,brand_name,generic_name,category,company,unit_name,conversion_factor,price_paisa,opening_stock_qty,opening_batch_number,opening_expiry_date,opening_cost_paisa',
+      'E2E-SETTINGS-CSV-001,,E2E Settings CSV Product,E2E Generic,Test Category,E2E Manufacturer,Pack,10,1000,2,E2E-SETTINGS-BATCH-001,2099-12-31,400',
+    ].join('\r\n');
+    await page.getByLabel('Choose product CSV in Settings').setInputFiles({
+      name: 'settings-products.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from(settingsProductCsv, 'utf8'),
+    });
+    await page.getByRole('status').filter({ hasText: 'Ready to review 1 rows: 1 valid' }).waitFor();
+    await page.getByRole('button', { name: 'Import 1 valid rows' }).click();
+    await page.getByRole('status').filter({ hasText: 'Imported 1 products successfully.' }).waitFor();
+    const settingsCsvProduct = await localApi<{
+      products: Array<{ id: string; code: string }>;
+    }>(page, { path: '/api/inventory/products?search=E2E-SETTINGS-CSV-001' });
+    const settingsCsvMedicine = settingsCsvProduct.products.find((item) => item.code === 'E2E-SETTINGS-CSV-001');
+    assert.ok(settingsCsvMedicine, 'Settings CSV import did not create its product');
+    const settingsCsvBatches = await localApi<{
+      rows: Array<{ quantity_remaining: number; batch_number: string }>;
+    }>(page, { path: `/api/inventory/stock-batches?p_medicine_id=${settingsCsvMedicine.id}` });
+    assert.ok(settingsCsvBatches.rows.some((row) =>
+      row.quantity_remaining === 20 && row.batch_number === 'E2E-SETTINGS-BATCH-001'),
+    'Settings CSV import did not create the opening batch');
+    await page.getByRole('button', { name: 'Export all CSV', exact: true }).click();
+    await page.waitForFunction(
+      () => (window as Window & { __e2eDownloads?: string[] }).__e2eDownloads?.some((name) =>
+        /^pharma-care-products-.*\.csv$/.test(name)) ?? false,
+    );
     const recoveryInput = page.getByLabel('Recovery key', { exact: true });
     await recoveryInput.fill(recoveryKey);
     await page.getByRole('button', { name: 'Export portable backup', exact: true }).click();
@@ -745,6 +866,10 @@ test('desktop roles, entitlements, offline workflows, and installed-app retentio
     });
     assert.ok(restoredCustomers.customers.some((entry) => entry.name === 'E2E Customer Edited'));
     assert.ok(!restoredCustomers.customers.some((entry) => entry.name === 'E2E Post-backup Record'));
+    const restoredSettingsCsvProduct = await localApi<{ products: Array<{ code: string }> }>(page, {
+      path: '/api/inventory/products?search=E2E-SETTINGS-CSV-001',
+    });
+    assert.ok(restoredSettingsCsvProduct.products.some((entry) => entry.code === 'E2E-SETTINGS-CSV-001'));
 
     await firstElectronApp.close();
     electronApp = null;
@@ -799,6 +924,78 @@ test('desktop roles, entitlements, offline workflows, and installed-app retentio
     await page.getByText(/not included in (your )?(plan|pharmacy license)/i).waitFor();
     assert.doesNotMatch(await page.locator('body').innerText(), /supabase/i);
 
+    const savedHeldBills = [{
+      id: 'offline-held-bill',
+      heldAt: Date.now(),
+      cart: [{
+        productId: 'draft-product',
+        productName: 'Offline Draft Medicine',
+        genericName: 'Offline Draft Generic',
+        batchId: 'draft-batch',
+        batchNumber: 'DRAFT-001',
+        expiryDate: '2099-12-31',
+        drugClass: 'OTC',
+        unitId: 'draft-unit',
+        unitName: 'Tablet',
+        conversionFactor: 1,
+        quantityInUnit: 1,
+        mrpPaisaPerUnit: 1000,
+        costPaisaPerUnit: null,
+        discountPercent: 0,
+        lineTotalPaisa: 1000,
+      }],
+      discount: { mode: 'amount', value: '0' },
+      customerId: '',
+      customerName: '',
+      customerType: 'WALK_IN',
+      totalPaisa: 1000,
+    }];
+    const savedPurchaseDrafts = [{
+      id: 'offline-purchase-draft',
+      savedAt: new Date().toISOString(),
+      supplierId: '',
+      paymentType: 'cash',
+      invoiceNumber: '',
+      purchaseDate: new Date().toISOString().slice(0, 10),
+      discount: '0.00',
+      notes: '',
+      lines: [{
+        product: {
+          id: 'draft-product',
+          code: 'DRAFT-001',
+          barcode: null,
+          brand_name: 'Offline Draft Medicine',
+          generic_name: 'Offline Draft Generic',
+          company: 'Test Manufacturer',
+          stock: 0,
+          last_cost_base_paisa: null,
+          units: [{
+            id: 'draft-unit',
+            name: 'Tablet',
+            conversion_factor: 1,
+            is_default_sale_unit: true,
+            price_paisa: 1000,
+          }],
+        },
+        unitId: 'draft-unit',
+        quantity: 1,
+        bonusQty: 0,
+        batchNumber: 'DRAFT-001',
+        expiryDate: '2099-12-31',
+        rate: '5.00',
+        mrp: '10.00',
+      }],
+    }];
+    await localApi(page, {
+      path: '/api/workflow-drafts/held-bills',
+      method: 'PUT',
+      body: { items: savedHeldBills },
+    });
+    await localApi(page, {
+      path: '/api/workflow-drafts/purchase-drafts',
+      method: 'PUT',
+      body: { items: savedPurchaseDrafts },
+    });
     await entitlementElectronApp.close();
     electronApp = null;
     await central.close();
@@ -819,6 +1016,21 @@ test('desktop roles, entitlements, offline workflows, and installed-app retentio
     const offlineNavigation = page.getByRole('navigation', { name: 'Main navigation' });
     await offlineNavigation.waitFor();
     assert.equal(await offlineNavigation.getByRole('button', { name: 'Settings', exact: true }).count(), 0);
+    assert.deepEqual(await localApi(page, { path: '/api/workflow-drafts/held-bills' }), { items: savedHeldBills });
+    assert.deepEqual(await localApi(page, { path: '/api/workflow-drafts/purchase-drafts' }), { items: savedPurchaseDrafts });
+    await offlineNavigation.getByRole('button', { name: 'POS Billing', exact: true }).click();
+    const heldBillsButton = page.getByRole('button', { name: 'Held bills, 1 saved' });
+    await heldBillsButton.waitFor();
+    await heldBillsButton.click();
+    await page.getByRole('region', { name: 'Held bills' }).waitFor();
+    await page.getByRole('button', { name: 'Resume', exact: true }).click();
+    await page.getByText('Offline Draft Medicine', { exact: true }).waitFor();
+    await offlineNavigation.getByRole('button', { name: 'Purchases', exact: true }).click();
+    const heldPurchasesButton = page.getByRole('button', { name: 'Held purchases (1)' });
+    await heldPurchasesButton.waitFor();
+    await heldPurchasesButton.click();
+    await page.getByRole('heading', { name: 'Held purchases' }).waitFor();
+    await page.getByText(/1 items · No invoice number/).waitFor();
     const offlineSettingsRoute = await localApiWithStatus(page, { path: '/api/settings/shop' });
     assert.equal(offlineSettingsRoute.status, 403, 'disabled Settings route was not denied after offline reopen');
     const reopenedProducts = await localApi<{ products: Array<{ id: string; code: string }> }>(page, {
@@ -994,7 +1206,9 @@ test('desktop roles, entitlements, offline workflows, and installed-app retentio
     const installedDatabase = await findFile(installedDataRoot, 'pharmadata.db');
     assert.ok(installedDatabase, 'installed app did not create its local database under the isolated profile');
 
+    const installedProcess = installedElectronApp.process();
     await installedElectronApp.close();
+    await waitForChildExit(installedProcess, 30_000);
     electronApp = null;
     const installedDatabaseSize = (await fs.stat(installedDatabase)).size;
     const uninstallEntry = (await fs.readdir(installDir)).find((entry) => /^uninstall.*\.exe$/i.test(entry));
@@ -1009,7 +1223,7 @@ test('desktop roles, entitlements, offline workflows, and installed-app retentio
     await fs.access(installedDatabase);
     assert.equal((await fs.stat(installedDatabase)).size, installedDatabaseSize);
     let applicationRemoved = false;
-    for (let attempt = 0; attempt < 30; attempt += 1) {
+    for (let attempt = 0; attempt < 240; attempt += 1) {
       try {
         await fs.access(installedExecutable);
       } catch {

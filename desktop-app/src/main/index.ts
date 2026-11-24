@@ -1,8 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, safeStorage } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, safeStorage, shell } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { startServer } from '../../../local-backend/src/server';
@@ -14,6 +16,8 @@ import {
   restorePortableBackup,
 } from '../../../local-backend/src/db/database';
 import { configureSecurity } from './security';
+import { isNewerStableVersion, parseAndVerifyUpdateManifest } from './updateManifest';
+import { centralApiEndpoint } from './centralApiUrl';
 
 type BackendHandle = Awaited<ReturnType<typeof startServer>>;
 type LocalUser = { id: string; username: string; role: string; permissions: string[] };
@@ -24,14 +28,16 @@ let sessionToken: string | null = null;
 let sessionUser: LocalUser | null = null;
 let backupTimer: NodeJS.Timeout | null = null;
 let licenseCheckinTimer: NodeJS.Timeout | null = null;
+let licenseCheckinSync: (() => Promise<void>) | null = null;
 let isQuitting = false;
 
 const localAuthToken = crypto.randomBytes(32).toString('hex');
 const localJwtSecret = crypto.randomBytes(48).toString('base64url');
 const localApiPort = 0;
 const APP_USER_MODEL_ID = 'com.pharmacare.desktop';
-const allowedApiPath = /^\/api\/(?:auth|license|pos|inventory|purchases|suppliers|customers|cashbook|reports|settings|print-requests|master-data|trash|notifications|preferences|backup)(?:\/[A-Za-z0-9._/-]+)?(?:\?[A-Za-z0-9_=&.%+-]*)?$/;
+const allowedApiPath = /^\/api\/(?:auth|license|pos|inventory|purchases|suppliers|customers|cashbook|reports|settings|print-requests|master-data|trash|notifications|preferences|workflow-drafts|backup)(?:\/[A-Za-z0-9._/-]+)?(?:\?[A-Za-z0-9_=&.%+-]*)?$/;
 const allowedMethods = new Set(['GET', 'POST', 'PUT', 'DELETE']);
+const maxInstallerBytes = 300 * 1024 * 1024;
 
 app.setAppUserModelId(APP_USER_MODEL_ID);
 
@@ -203,9 +209,12 @@ function registerIpcHandlers(): void {
       throw new Error('The licensing service must use HTTPS in a packaged build.');
     }
     const hardwareId = getHardwareId();
-    const response = await fetch(`${centralUrl.origin}/api/licensing/activate`, {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const supabaseAnonKey = process.env.CENTRAL_SUPABASE_ANON_KEY;
+    if (supabaseAnonKey) headers.apikey = supabaseAnonKey;
+    const response = await fetch(centralApiEndpoint(centralApiUrl, '/api/licensing/activate'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ activationCode: code.trim(), hardwareId }),
     });
     const result = await response.json().catch(() => null);
@@ -250,6 +259,9 @@ function registerIpcHandlers(): void {
     }, false);
     sessionToken = result.token;
     sessionUser = result.user;
+    if (licenseCheckinSync) {
+      void licenseCheckinSync().catch((error) => console.error('License check-in failed:', error));
+    }
     return { user: sessionUser, recoveryKey };
   });
 
@@ -553,6 +565,14 @@ function createApplicationMenu(): void {
             });
           },
         },
+        {
+          label: 'Check for updates…',
+          click: () => {
+            void checkForUpdates().catch((error) => {
+              dialog.showErrorBox('Update check failed', error instanceof Error ? error.message : String(error));
+            });
+          },
+        },
         { type: 'separator' },
         { role: 'quit' },
       ],
@@ -561,6 +581,129 @@ function createApplicationMenu(): void {
     { role: 'windowMenu' },
   ]);
   Menu.setApplicationMenu(menu);
+}
+
+async function checkForUpdates(): Promise<void> {
+  const manifestUrlValue = process.env.PHARMA_UPDATE_MANIFEST_URL;
+  const publicKey = process.env.PHARMA_UPDATE_MANIFEST_PUBLIC_KEY;
+  if (!manifestUrlValue || !publicKey) {
+    await dialog.showMessageBox({
+      type: 'info',
+      buttons: ['OK'],
+      title: 'Updates are not configured',
+      message: 'This build does not have a signed update feed configured.',
+    });
+    return;
+  }
+  const manifestUrl = new URL(manifestUrlValue);
+  if (manifestUrl.protocol !== 'https:' || manifestUrl.username || manifestUrl.password) {
+    throw new Error('The update manifest URL must be a credential-free HTTPS URL.');
+  }
+
+  const manifestResponse = await fetch(manifestUrl, {
+    signal: AbortSignal.timeout(15000),
+    redirect: 'error',
+    headers: { Accept: 'application/json' },
+  });
+  if (!manifestResponse.ok) throw new Error(`Update server returned HTTP ${manifestResponse.status}.`);
+  const declaredLength = Number(manifestResponse.headers.get('content-length') || 0);
+  if (declaredLength > 16 * 1024) throw new Error('The update manifest exceeds the size limit.');
+  const manifestText = await manifestResponse.text();
+  if (Buffer.byteLength(manifestText, 'utf8') > 16 * 1024) throw new Error('The update manifest exceeds the size limit.');
+  let manifestInput: unknown;
+  try {
+    manifestInput = JSON.parse(manifestText);
+  } catch {
+    throw new Error('The update server returned invalid JSON.');
+  }
+  const manifest = parseAndVerifyUpdateManifest(manifestInput, publicKey);
+  if (!isNewerStableVersion(manifest.version, app.getVersion())) {
+    await dialog.showMessageBox({
+      type: 'info',
+      buttons: ['OK'],
+      title: 'Pharma Care is up to date',
+      message: `Installed version ${app.getVersion()} is current.`,
+    });
+    return;
+  }
+
+  const choice = await dialog.showMessageBox({
+    type: 'info',
+    buttons: ['Download update', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Pharma Care update available',
+    message: `Version ${manifest.version} is available.`,
+    detail: 'The installer is authenticated by a signed release manifest and will be opened only after its SHA-512 digest is verified.',
+  });
+  if (choice.response !== 0) return;
+
+  const installerUrl = new URL(manifest.downloadUrl);
+  const installerResponse = await fetch(installerUrl, {
+    signal: AbortSignal.timeout(5 * 60 * 1000),
+    redirect: 'error',
+  });
+  if (!installerResponse.ok || !installerResponse.body) {
+    throw new Error(`The update download failed (HTTP ${installerResponse.status}).`);
+  }
+  const contentLength = Number(installerResponse.headers.get('content-length') || 0);
+  if (contentLength > maxInstallerBytes) throw new Error('The update installer exceeds the 300 MB size limit.');
+
+  const downloadDirectory = app.getPath('downloads');
+  fs.mkdirSync(downloadDirectory, { recursive: true });
+  let installerPath = path.join(downloadDirectory, `PharmaCare-${manifest.version}-Setup.exe`);
+  let suffix = 1;
+  while (fs.existsSync(installerPath)) {
+    installerPath = path.join(downloadDirectory, `PharmaCare-${manifest.version}-Setup-${suffix}.exe`);
+    suffix += 1;
+  }
+  const temporaryPath = `${installerPath}.download`;
+  const hasher = crypto.createHash('sha512');
+  let downloadedBytes = 0;
+  try {
+    const meter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        downloadedBytes += chunk.length;
+        if (downloadedBytes > maxInstallerBytes) {
+          callback(new RangeError('The update installer exceeds the 300 MB size limit.'));
+          return;
+        }
+        hasher.update(chunk);
+        callback(null, chunk);
+      },
+    });
+    await pipeline(
+      Readable.fromWeb(installerResponse.body as import('node:stream/web').ReadableStream),
+      meter,
+      fs.createWriteStream(temporaryPath, { flags: 'wx' }),
+    );
+    const actualDigest = hasher.digest();
+    const expectedDigest = Buffer.from(manifest.sha512, 'base64');
+    if (actualDigest.length !== expectedDigest.length || !crypto.timingSafeEqual(actualDigest, expectedDigest)) {
+      throw new Error('The downloaded installer did not match the signed SHA-512 digest.');
+    }
+    fs.renameSync(temporaryPath, installerPath);
+  } catch (error) {
+    if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+    throw error;
+  }
+
+  const openChoice = await dialog.showMessageBox({
+    type: 'info',
+    buttons: ['Open installer', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Update verified',
+    message: `Pharma Care ${manifest.version} was downloaded and verified.`,
+    detail: 'Opening the installer will close Pharma Care first. Your pharmacy data is stored separately and will be preserved.',
+  });
+  if (openChoice.response === 0) {
+    const openError = await shell.openPath(installerPath);
+    if (openError) throw new Error(`Could not open the verified installer: ${openError}`);
+    app.quit();
+  } else {
+    shell.showItemInFolder(installerPath);
+  }
 }
 
 function createWindow(): void {
@@ -658,14 +801,18 @@ async function startApplication(): Promise<void> {
     if (!status.isActivated) return;
     const centralApiUrl = process.env.CENTRAL_API_URL;
     if (!centralApiUrl) throw new Error('CENTRAL_API_URL is not configured for this build.');
-    const response = await fetch(`${new URL(centralApiUrl).origin}/api/licensing/check-in`, {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const supabaseAnonKey = process.env.CENTRAL_SUPABASE_ANON_KEY;
+    if (supabaseAnonKey) headers.apikey = supabaseAnonKey;
+    const response = await fetch(centralApiEndpoint(centralApiUrl, '/api/licensing/check-in'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
         shopId: status.shopId,
         hardwareId: process.env.PHARMA_HARDWARE_ID,
         appVersion: app.getVersion(),
         osVersion: `${process.platform} ${os.release()}`,
+        adminSetupComplete: !status.requiresAdminSetup,
       }),
     });
     const result = await response.json().catch(() => null);
@@ -678,7 +825,14 @@ async function startApplication(): Promise<void> {
       licenseToken: result.licenseToken,
       hardwareId: process.env.PHARMA_HARDWARE_ID,
     }, false);
+    if (result.announcements !== undefined && !Array.isArray(result.announcements)) {
+      throw new Error('Licensing service returned an invalid announcement list.');
+    }
+    await localRequest('/api/license/announcements', 'POST', {
+      announcements: result.announcements || [],
+    }, false);
   };
+  licenseCheckinSync = syncLicense;
   void syncLicense().catch((error) => console.error('License check-in failed:', error));
   licenseCheckinTimer = setInterval(() => {
     void syncLicense().catch((error) => console.error('License check-in failed:', error));
@@ -715,6 +869,7 @@ app.on('before-quit', (event) => {
   isQuitting = true;
   if (backupTimer) clearInterval(backupTimer);
   if (licenseCheckinTimer) clearInterval(licenseCheckinTimer);
+  licenseCheckinSync = null;
   void backend.app.close().finally(() => {
     backend?.db.close();
     backend = null;

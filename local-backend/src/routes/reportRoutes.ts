@@ -195,41 +195,97 @@ export function registerReportRoutes(app: FastifyInstance, db: Database.Database
       }
 
       const query = request.query as { from?: string; to?: string };
-      const fromTime = query.from ? Math.floor(new Date(query.from).getTime() / 1000) : Math.floor(Date.now() / 1000) - 86400;
-      const toTime = query.to ? Math.floor(new Date(query.to).getTime() / 1000) : Math.floor(Date.now() / 1000);
+      const fromMs = query.from ? new Date(query.from).getTime() : Date.now() - 86400000;
+      const toMs = query.to ? new Date(query.to).getTime() : Date.now();
+      if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs >= toMs) {
+        return reply.status(400).send({ error: 'Choose a valid profit-summary date range.' });
+      }
+      const fromTime = Math.ceil(fromMs / 1000);
+      const toTime = Math.ceil(toMs / 1000);
 
-      // Aggregate revenue
-      const revRow = db.prepare(`
-        SELECT COALESCE(SUM(total_paisa), 0) as total_rev
-        FROM sales
-        WHERE created_at >= ? AND created_at <= ?
-      `).get(fromTime, toTime) as { total_rev: number };
+      const rows = db.prepare(`
+        WITH returned_quantities AS (
+          SELECT sale_item_id, batch_id, SUM(quantity_smallest_unit) AS quantity
+          FROM sale_return_items
+          GROUP BY sale_item_id, batch_id
+        ),
+        item_costs AS (
+          SELECT
+            item.id,
+            item.sale_id,
+            CASE
+              WHEN COUNT(allocation.id) = 0
+                THEN COALESCE(item.cost_paisa_per_unit, 0) * item.quantity_in_unit
+              ELSE SUM(CASE
+                WHEN COALESCE(returned.quantity, 0) >= allocation.quantity_smallest_unit THEN 0
+                ELSE (allocation.quantity_smallest_unit - COALESCE(returned.quantity, 0))
+                  * allocation.cost_price_paisa
+              END)
+            END AS cost_paisa
+          FROM sale_items AS item
+          LEFT JOIN sale_item_batch_allocations AS allocation
+            ON allocation.sale_item_id = item.id
+          LEFT JOIN returned_quantities AS returned
+            ON returned.sale_item_id = item.id
+            AND returned.batch_id = allocation.batch_id
+          GROUP BY item.id, item.sale_id
+        ),
+        sale_costs AS (
+          SELECT sale_id, SUM(cost_paisa) AS cost_paisa
+          FROM item_costs
+          GROUP BY sale_id
+        ),
+        sale_refunds AS (
+          SELECT sale_id, SUM(total_refund_paisa) AS refund_paisa
+          FROM sale_returns
+          GROUP BY sale_id
+        )
+        SELECT
+          sale.created_at,
+          sale.total_paisa,
+          COALESCE(refunds.refund_paisa, 0) AS refund_paisa,
+          COALESCE(costs.cost_paisa, 0) AS cost_paisa
+        FROM sales AS sale
+        LEFT JOIN sale_refunds AS refunds ON refunds.sale_id = sale.id
+        LEFT JOIN sale_costs AS costs ON costs.sale_id = sale.id
+        WHERE sale.created_at >= ? AND sale.created_at < ?
+        ORDER BY sale.created_at ASC, sale.id ASC
+      `).all(fromTime, toTime) as Array<{
+        created_at: number;
+        total_paisa: number;
+        refund_paisa: number;
+        cost_paisa: number;
+      }>;
 
-      // Aggregate COGS
-      const cogsRow = db.prepare(`
-        SELECT COALESCE(SUM(si.cost_paisa_per_unit * si.quantity_in_unit), 0) as total_cogs
-        FROM sale_items si
-        JOIN sales s ON si.sale_id = s.id
-        WHERE s.created_at >= ? AND s.created_at <= ?
-      `).get(fromTime, toTime) as { total_cogs: number };
+      const dailyTotals = new Map<string, {
+        revenuePaisa: number;
+        costPaisa: number;
+        orderCount: number;
+      }>();
+      for (const row of rows) {
+        const date = new Date((row.created_at + 5 * 60 * 60) * 1000).toISOString().slice(0, 10);
+        const daily = dailyTotals.get(date) || { revenuePaisa: 0, costPaisa: 0, orderCount: 0 };
+        daily.revenuePaisa += Math.max(0, row.total_paisa - row.refund_paisa);
+        daily.costPaisa += row.cost_paisa;
+        daily.orderCount += 1;
+        dailyTotals.set(date, daily);
+      }
 
-      // Subtract returns
-      const returnRow = db.prepare(`
-        SELECT COALESCE(SUM(total_refund_paisa), 0) as total_returns
-        FROM sale_returns
-        WHERE created_at >= ? AND created_at <= ?
-      `).get(fromTime, toTime) as { total_returns: number };
-
-      const netRevenuePaisa = Math.max(0, revRow.total_rev - returnRow.total_returns);
-      const grossProfitPaisa = Math.max(0, netRevenuePaisa - cogsRow.total_cogs);
-      const marginPercent = netRevenuePaisa > 0 ? (grossProfitPaisa / netRevenuePaisa) * 100 : 0;
+      const daily = [...dailyTotals.entries()].map(([date, totals]) => ({
+        date,
+        ...totals,
+        grossProfitPaisa: totals.revenuePaisa - totals.costPaisa,
+      }));
+      const revenuePaisa = daily.reduce((sum, day) => sum + day.revenuePaisa, 0);
+      const costPaisa = daily.reduce((sum, day) => sum + day.costPaisa, 0);
+      const orderCount = daily.reduce((sum, day) => sum + day.orderCount, 0);
 
       return reply.send({
-        netRevenuePaisa,
-        cogsPaisa: cogsRow.total_cogs,
-        grossProfitPaisa,
-        grossMarginPercent: Math.round(marginPercent * 10) / 10,
-        returnRefundsPaisa: returnRow.total_returns,
+        revenuePaisa,
+        costPaisa,
+        grossProfitPaisa: revenuePaisa - costPaisa,
+        orderCount,
+        daily,
       });
     } catch (error: any) {
       return reply.status(500).send({ error: error.message });

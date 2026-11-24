@@ -1,6 +1,6 @@
-import React, { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertCircle, Check, Edit2, Layers, Merge, Plus, RefreshCw, Search,
+  AlertCircle, Check, Download, Edit2, FileUp, Layers, Merge, Plus, RefreshCw, Search,
   Tag, Trash2, X,
 } from 'lucide-react';
 import { usePermissions } from '../permissions';
@@ -8,9 +8,21 @@ import { fetchAllSupabaseRows } from '../utils/fetchAllSupabaseRows';
 import { getSupabaseErrorMessage } from '../utils/supabaseError';
 import { supabase } from '../utils/supabase';
 import { isDesktopMode, localApiRequest } from '../services/localApi';
+import { downloadTableExport } from '../utils/tableExport';
+import { dispatchStockChanged } from '../utils/stockAlertsEvents';
 import { findSimilarNames, type SimilarNamePair } from './masterDataSimilarity';
+import {
+  createMasterDataCsvFile,
+  MASTER_DATA_IMPORT_HEADERS,
+  mergeMasterUnitImport,
+  parseCsvBoolean,
+  parseMasterDataCsv,
+  type MasterDataImportRow,
+  type MasterDataTab,
+  type MasterUnitImportValue,
+  type MasterUnitValue,
+} from './masterDataCsv';
 
-type MasterTab = 'categories' | 'brands' | 'units';
 type MasterKind = 'category' | 'brand';
 type SortMode = 'name' | 'products' | 'stock';
 
@@ -28,6 +40,7 @@ interface MasterValue {
 interface UnitRow {
   id: string;
   medicine_id: string;
+  medicine_code: string;
   name: string;
   conversion_factor: number;
   is_default_sale_unit: boolean;
@@ -47,6 +60,39 @@ interface MasterOverview {
     product_count: number;
     unit_count: number;
   };
+}
+
+interface LocalUnitImportProduct {
+  id: string;
+  code: string;
+  barcode: string;
+  brandName: string;
+  genericName: string;
+  strength: string | null;
+  categoryId: string | null;
+  brandId: string | null;
+  drugClass: string;
+  storageCondition: string;
+  rackLocation: string;
+  minStockAlert: number;
+  requiresPrescription: boolean;
+}
+
+interface WebUnitImportProduct {
+  id: string;
+  code: string;
+  barcode: string | null;
+  brand_name: string;
+  generic_name: string;
+  strength: string | null;
+  category: string;
+  company: string;
+  drug_class: string;
+  storage_condition: string;
+  rack_location: string;
+  min_stock_alert: number;
+  requires_prescription: boolean;
+  is_active: boolean;
 }
 
 const FIELD = 'w-full rounded-control border border-border bg-surface px-3 py-2 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent';
@@ -86,6 +132,41 @@ function isOverview(value: unknown): value is MasterOverview {
       .every((key) => typeof summary[key] === 'number');
 }
 
+function isLocalUnitImportProduct(value: unknown): value is LocalUnitImportProduct {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.code === 'string'
+    && typeof value.barcode === 'string'
+    && typeof value.brandName === 'string'
+    && typeof value.genericName === 'string'
+    && (typeof value.strength === 'string' || value.strength === null)
+    && (typeof value.categoryId === 'string' || value.categoryId === null)
+    && (typeof value.brandId === 'string' || value.brandId === null)
+    && typeof value.drugClass === 'string'
+    && typeof value.storageCondition === 'string'
+    && typeof value.rackLocation === 'string'
+    && typeof value.minStockAlert === 'number'
+    && typeof value.requiresPrescription === 'boolean';
+}
+
+function isWebUnitImportProduct(value: unknown): value is WebUnitImportProduct {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.code === 'string'
+    && (typeof value.barcode === 'string' || value.barcode === null)
+    && typeof value.brand_name === 'string'
+    && typeof value.generic_name === 'string'
+    && (typeof value.strength === 'string' || value.strength === null)
+    && typeof value.category === 'string'
+    && typeof value.company === 'string'
+    && typeof value.drug_class === 'string'
+    && typeof value.storage_condition === 'string'
+    && typeof value.rack_location === 'string'
+    && typeof value.min_stock_alert === 'number'
+    && typeof value.requires_prescription === 'boolean'
+    && typeof value.is_active === 'boolean';
+}
+
 function errorText(error: unknown) {
   return getSupabaseErrorMessage(error, 'Could not complete the request.');
 }
@@ -117,8 +198,9 @@ export function MasterDataView({ onViewProducts }: {
 }) {
   const { can } = usePermissions();
   const canManage = can('categories');
+  const canManageUnits = can('products');
   const canViewProducts = can('products');
-  const [tab, setTab] = useState<MasterTab>('categories');
+  const [tab, setTab] = useState<MasterDataTab>('categories');
   const [overview, setOverview] = useState<MasterOverview | null>(null);
   const [units, setUnits] = useState<UnitRow[]>([]);
   const [query, setQuery] = useState('');
@@ -134,6 +216,8 @@ export function MasterDataView({ onViewProducts }: {
   const [merge, setMerge] = useState<{ kind: MasterKind; source: MasterValue; targetId: string } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{ kind: MasterKind; item: MasterValue } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [csvBusy, setCsvBusy] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const loadOverview = useCallback(async () => {
     const client = supabase;
@@ -178,6 +262,7 @@ export function MasterDataView({ onViewProducts }: {
           isRecord(unit)
           && typeof unit.id === 'string'
           && typeof unit.medicine_id === 'string'
+          && typeof unit.medicine_code === 'string'
           && typeof unit.name === 'string'
           && typeof unit.conversion_factor === 'number'
           && typeof unit.is_default_sale_unit === 'boolean'
@@ -198,13 +283,17 @@ export function MasterDataView({ onViewProducts }: {
         fetchAllSupabaseRows((from, to) => client.from('medicines')
           .select('id,brand_name,generic_name,code').order('id').range(from, to)),
       ]);
-      const medicineNames = new Map(medicineRows.map((medicine) => [
+      const medicineDetails = new Map(medicineRows.map((medicine) => [
         medicine.id,
-        `${medicine.brand_name} · ${medicine.generic_name} (${medicine.code})`,
+        {
+          name: `${medicine.brand_name} · ${medicine.generic_name} (${medicine.code})`,
+          code: medicine.code,
+        },
       ]));
       setUnits(unitRows.map((unit) => ({
         ...unit,
-        medicine_name: medicineNames.get(unit.medicine_id) ?? 'Unknown medicine',
+        medicine_name: medicineDetails.get(unit.medicine_id)?.name ?? 'Unknown medicine',
+        medicine_code: medicineDetails.get(unit.medicine_id)?.code ?? '',
       })));
     } catch (caught) {
       setUnitsError(errorText(caught));
@@ -315,6 +404,315 @@ export function MasterDataView({ onViewProducts }: {
     [mergeValues, normalizedQuery],
   );
 
+  const exportCsv = async () => {
+    setCsvBusy(true);
+    setNotice('');
+    try {
+      const file = createMasterDataCsvFile(
+        tab,
+        tab === 'categories' ? visibleItems : [],
+        tab === 'brands' ? visibleItems : [],
+        units,
+      );
+      await downloadTableExport(file.filename, file.sheetName, file.headers, file.rows, 'csv');
+      setNotice(`Exported ${file.rows.length} ${tab === 'brands' ? 'manufacturer' : tab === 'units' ? 'unit' : 'category'} record${file.rows.length === 1 ? '' : 's'}.`);
+    } catch (caught) {
+      setNotice(errorText(caught));
+    } finally {
+      setCsvBusy(false);
+    }
+  };
+
+  const downloadCsvTemplate = async () => {
+    setCsvBusy(true);
+    setNotice('');
+    try {
+      const sheetName = tab === 'brands' ? 'Manufacturers' : tab === 'units' ? 'Units' : 'Categories';
+      const fileKind = tab === 'brands' ? 'manufacturers' : tab;
+      await downloadTableExport(
+        `pharma-care-${fileKind}-template`,
+        sheetName,
+        MASTER_DATA_IMPORT_HEADERS[tab],
+        [],
+        'csv',
+      );
+      setNotice(`Downloaded the ${sheetName.toLowerCase()} CSV template.`);
+    } catch (caught) {
+      setNotice(errorText(caught));
+    } finally {
+      setCsvBusy(false);
+    }
+  };
+
+  const saveMasterCsvRecord = async (targetKind: MasterKind, value: string, isActive: boolean) => {
+    if (isDesktopMode()) {
+      await localApiRequest('/api/master-data/values', 'POST', {
+        kind: targetKind,
+        name: value,
+        isActive,
+      });
+      return;
+    }
+    if (!supabase) throw new Error('Supabase is not configured.');
+    const { error: rpcError } = await supabase.rpc(
+      targetKind === 'category' ? 'save_category' : 'save_brand',
+      targetKind === 'category'
+        ? { p_category_id: null, p_name: value, p_is_active: isActive }
+        : { p_brand_id: null, p_name: value, p_is_active: isActive },
+    );
+    if (rpcError) throw rpcError;
+  };
+
+  const findLocalProductForUnitImport = async (code: string): Promise<LocalUnitImportProduct> => {
+    const limit = 500;
+    let expectedTotal = 0;
+    for (let page = 1; (page - 1) * limit < expectedTotal || page === 1; page += 1) {
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(limit),
+        search: code,
+        status: 'all',
+      });
+      const response = await localApiRequest<unknown>(`/api/inventory/products?${params.toString()}`);
+      if (!isRecord(response) || !Array.isArray(response.products) || typeof response.total !== 'number') {
+        throw new Error('The local product service returned invalid medicine data.');
+      }
+      expectedTotal = response.total;
+      const match = response.products.find((product) => isRecord(product) && product.code === code);
+      if (match) {
+        if (!isLocalUnitImportProduct(match)) throw new Error('The local product service returned incomplete medicine data.');
+        return match;
+      }
+      if (response.products.length === 0) break;
+    }
+    throw new Error(`No medicine matches product code "${code}".`);
+  };
+
+  const findWebProductForUnitImport = async (code: string): Promise<WebUnitImportProduct> => {
+    if (!supabase) throw new Error('Supabase is not configured.');
+    const pageSize = 200;
+    let expectedTotal = 0;
+    for (let page = 1; (page - 1) * pageSize < expectedTotal || page === 1; page += 1) {
+      const { data, error: rpcError } = await supabase.rpc('products_list', {
+        p_search: code,
+        p_category: null,
+        p_manufacturer: null,
+        p_class: null,
+        p_status: 'all',
+        p_low_only: false,
+        p_sort_col: 'name',
+        p_sort_dir: 'asc',
+        p_page: page,
+        p_page_size: pageSize,
+      });
+      if (rpcError) throw rpcError;
+      if (!isRecord(data) || !Array.isArray(data.rows) || typeof data.total_count !== 'number') {
+        throw new Error('The product service returned invalid medicine data.');
+      }
+      expectedTotal = data.total_count;
+      const match = data.rows.find((product) => isRecord(product) && product.code === code);
+      if (match) {
+        if (!isWebUnitImportProduct(match)) throw new Error('The product service returned incomplete medicine data.');
+        return match;
+      }
+      if (data.rows.length === 0) break;
+    }
+    throw new Error(`No medicine matches product code "${code}".`);
+  };
+
+  const importMasterNameCsv = async (fileRows: readonly MasterDataImportRow[], selectedTab: MasterDataTab) => {
+    const targetKind: MasterKind = selectedTab === 'categories' ? 'category' : 'brand';
+    const sourceValues = selectedTab === 'categories' ? overview?.categories ?? [] : overview?.manufacturers ?? [];
+    const seenNames = new Set(sourceValues.map((item) => item.name.trim().toLocaleLowerCase()));
+    let importedCount = 0;
+    let skippedCount = 0;
+    const issues: string[] = [];
+    const nameColumn = selectedTab === 'categories' ? 'category_name' : 'manufacturer_name';
+
+    for (const row of fileRows) {
+      const value = row.values[nameColumn]?.trim() ?? '';
+      if (!value || value.length > 120) {
+        skippedCount += 1;
+        issues.push(`Line ${row.line}: name must contain 1 to 120 characters.`);
+        continue;
+      }
+      let isActive: boolean;
+      try {
+        isActive = parseCsvBoolean(row.values.is_active ?? '', true) ?? true;
+      } catch (caught) {
+        skippedCount += 1;
+        issues.push(`Line ${row.line}: ${errorText(caught)}`);
+        continue;
+      }
+      const nameKey = value.toLocaleLowerCase();
+      if (seenNames.has(nameKey)) {
+        skippedCount += 1;
+        continue;
+      }
+      seenNames.add(nameKey);
+      try {
+        await saveMasterCsvRecord(targetKind, value, isActive);
+        importedCount += 1;
+      } catch (caught) {
+        skippedCount += 1;
+        issues.push(`Line ${row.line}: ${errorText(caught)}`);
+      }
+    }
+
+    await loadOverview();
+    const label = selectedTab === 'categories' ? 'category' : 'manufacturer';
+    const issueSummary = issues.length ? ` ${issues.slice(0, 3).join(' ')}` : '';
+    setNotice(`Imported ${importedCount} ${label} record${importedCount === 1 ? '' : 's'}; skipped ${skippedCount}.${issueSummary}`);
+  };
+
+  const importUnitCsv = async (fileRows: readonly MasterDataImportRow[]) => {
+    const groups = new Map<string, { rows: MasterUnitImportValue[]; lines: number[] }>();
+    let skippedCount = 0;
+    const issues: string[] = [];
+
+    for (const row of fileRows) {
+      const code = row.values.medicine_code?.trim() ?? '';
+      const name = row.values.unit_name?.trim() ?? '';
+      const conversionFactor = Number(row.values.conversion_factor);
+      const pricePaisa = Number(row.values.price_paisa);
+      try {
+        if (!code) throw new Error('Medicine product code is required.');
+        if (!name || name.length > 120) throw new Error('Unit name must contain 1 to 120 characters.');
+        if (!Number.isSafeInteger(conversionFactor) || conversionFactor < 1 || conversionFactor > 2_147_483_647) {
+          throw new Error('Conversion factor must be a positive whole number.');
+        }
+        if (!row.values.price_paisa?.trim()
+          || !Number.isSafeInteger(pricePaisa) || pricePaisa < 0 || pricePaisa > 2_147_483_647) {
+          throw new Error('Sale price must be a non-negative whole number of paisa.');
+        }
+        const isDefaultSaleUnit = parseCsvBoolean(row.values.is_default_sale_unit ?? '');
+        const unit: MasterUnitImportValue = {
+          ...(row.values.unit_id?.trim() ? { unitId: row.values.unit_id.trim() } : {}),
+          name,
+          conversionFactor,
+          ...(isDefaultSaleUnit !== undefined ? { isDefaultSaleUnit } : {}),
+          pricePaisa,
+          barcode: row.values.barcode?.trim() || null,
+        };
+        const group = groups.get(code) ?? { rows: [], lines: [] };
+        group.rows.push(unit);
+        group.lines.push(row.line);
+        groups.set(code, group);
+      } catch (caught) {
+        skippedCount += 1;
+        issues.push(`Line ${row.line}: ${errorText(caught)}`);
+      }
+    }
+
+    let importedCount = 0;
+    for (const [code, group] of groups) {
+      try {
+        const product = isDesktopMode()
+          ? { mode: 'local' as const, value: await findLocalProductForUnitImport(code) }
+          : { mode: 'web' as const, value: await findWebProductForUnitImport(code) };
+        const existingUnits = units
+          .filter((unit) => unit.medicine_id === product.value.id)
+          .map((unit) => ({
+            id: unit.id,
+            name: unit.name,
+            conversion_factor: unit.conversion_factor,
+            is_default_sale_unit: unit.is_default_sale_unit,
+            price_paisa: unit.price_paisa,
+            barcode: unit.barcode,
+          }));
+        const mergedUnits = mergeMasterUnitImport(existingUnits, group.rows);
+
+        if (product.mode === 'local') {
+          const localProduct = product.value;
+          await localApiRequest('/api/inventory/products', 'POST', {
+            id: localProduct.id,
+            code: localProduct.code,
+            barcode: localProduct.barcode,
+            brandName: localProduct.brandName,
+            genericName: localProduct.genericName,
+            strength: localProduct.strength,
+            categoryId: localProduct.categoryId,
+            brandId: localProduct.brandId,
+            drugClass: localProduct.drugClass,
+            storageCondition: localProduct.storageCondition,
+            rackLocation: localProduct.rackLocation,
+            minStockAlert: localProduct.minStockAlert,
+            requiresPrescription: localProduct.requiresPrescription,
+            units: mergedUnits.map((unit) => ({
+              ...(unit.id ? { id: unit.id } : {}),
+              name: unit.name,
+              conversionFactor: unit.conversion_factor,
+              isDefaultSaleUnit: unit.is_default_sale_unit,
+              pricePerUnitPaisa: unit.price_paisa,
+              barcode: unit.barcode,
+            })),
+          });
+        } else {
+          const webProduct = product.value;
+          if (!supabase) throw new Error('Supabase is not configured.');
+          const { error: saveError } = await supabase.rpc('save_medicine', {
+            p_medicine_id: webProduct.id,
+            p_values: {
+              code: webProduct.code,
+              barcode: webProduct.barcode,
+              brand_name: webProduct.brand_name,
+              generic_name: webProduct.generic_name,
+              strength: webProduct.strength,
+              category: webProduct.category,
+              company: webProduct.company,
+              drug_class: webProduct.drug_class,
+              storage_condition: webProduct.storage_condition,
+              rack_location: webProduct.rack_location,
+              min_stock_alert: webProduct.min_stock_alert,
+              requires_prescription: webProduct.requires_prescription,
+              is_active: webProduct.is_active,
+            },
+            p_units: mergedUnits.map((unit) => ({
+              ...(unit.id ? { id: unit.id } : {}),
+              name: unit.name,
+              conversion_factor: unit.conversion_factor,
+              is_default_sale_unit: unit.is_default_sale_unit,
+              price_paisa: unit.price_paisa,
+              barcode: unit.barcode,
+            })),
+          });
+          if (saveError) throw saveError;
+        }
+        importedCount += group.rows.length;
+      } catch (caught) {
+        skippedCount += group.rows.length;
+        issues.push(`Medicine ${code} (lines ${group.lines.join(', ')}): ${errorText(caught)}`);
+      }
+    }
+
+    if (importedCount > 0) {
+      dispatchStockChanged();
+      await Promise.all([loadUnits(), loadOverview()]);
+    }
+    const issueSummary = issues.length ? ` ${issues.slice(0, 3).join(' ')}` : '';
+    setNotice(`Imported ${importedCount} unit record${importedCount === 1 ? '' : 's'}; skipped ${skippedCount}.${issueSummary}`);
+  };
+
+  const importCsvFile = async (file: File, selectedTab: MasterDataTab) => {
+    setCsvBusy(true);
+    setNotice('');
+    setError('');
+    try {
+      const rows = parseMasterDataCsv(await file.text(), selectedTab);
+      if (selectedTab === 'units') {
+        if (!canManageUnits) throw new Error('Products permission is required to import medicine units.');
+        await importUnitCsv(rows);
+      } else {
+        await importMasterNameCsv(rows, selectedTab);
+      }
+    } catch (caught) {
+      setNotice(errorText(caught));
+    } finally {
+      setCsvBusy(false);
+      if (importInputRef.current) importInputRef.current.value = '';
+    }
+  };
+
   const beginMerge = (mergeKind: MasterKind, source: MasterValue, target?: MasterValue) => {
     const targets = mergeKind === 'category' ? overview?.categories ?? [] : overview?.manufacturers ?? [];
     const defaultTarget = target ?? targets.find((item) => item.id !== source.id);
@@ -374,6 +772,12 @@ export function MasterDataView({ onViewProducts }: {
   const openPairForReview = (pair: SimilarNamePair<MasterValue>) => beginMerge(kind, pair.first, pair.second);
   const isUnitsTab = tab === 'units';
   const unitCount = overview?.summary.unit_count ?? 0;
+  const canImportCurrentTab = isUnitsTab ? canManageUnits : canManage;
+  const exportCount = isUnitsTab ? units.length : visibleItems.length;
+  const changeTab = (nextTab: MasterDataTab) => {
+    setTab(nextTab);
+    setNotice('');
+  };
 
   return <div className="space-y-3.5">
     <section className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -382,6 +786,36 @@ export function MasterDataView({ onViewProducts }: {
         <p className="mt-0.5 text-[13px] text-muted">Live category, manufacturer and medicine-unit records</p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          aria-label={`Choose ${tab === 'brands' ? 'manufacturer' : tab === 'units' ? 'unit' : 'category'} CSV`}
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void importCsvFile(file, tab);
+          }}
+        />
+        {canImportCurrentTab && <button
+          type="button"
+          className={SECONDARY}
+          disabled={csvBusy || loading || (isUnitsTab && unitsLoading)}
+          onClick={() => importInputRef.current?.click()}
+        >
+          <FileUp size={15} /> Import CSV
+        </button>}
+        <button type="button" className={SECONDARY} disabled={csvBusy} onClick={() => void downloadCsvTemplate()}>
+          <Download size={15} /> CSV template
+        </button>
+        <button
+          type="button"
+          className={SECONDARY}
+          disabled={csvBusy || exportCount === 0 || (isUnitsTab ? unitsLoading : loading)}
+          onClick={() => void exportCsv()}
+        >
+          <Download size={15} /> Export CSV
+        </button>
         {canManage && !isUnitsTab && <button type="button" className={BUTTON} onClick={() => openEditor(kind, null)}><Plus size={16} /> Add {kind === 'category' ? 'category' : 'manufacturer'}</button>}
       </div>
     </section>
@@ -391,9 +825,9 @@ export function MasterDataView({ onViewProducts }: {
         {([
           ['categories', `Categories${overview ? ` (${overview.summary.category_count})` : ''}`],
           ['brands', `Manufacturers${overview ? ` (${overview.summary.manufacturer_count})` : ''}`],
-          ...(unitCount > 0 ? [['units', `Units (${unitCount})`] as const] : []),
+          ['units', `Units (${unitCount})`],
         ] as const).map(([value, label]) => (
-          <button type="button" key={value} aria-pressed={tab === value} className={`rounded-full border px-3.5 py-2 text-[13px] font-bold transition-colors ${tab === value ? 'border-primary bg-primary text-white' : 'border-border bg-surface text-text hover:bg-primary/5'}`} onClick={() => setTab(value)}>
+          <button type="button" key={value} aria-pressed={tab === value} className={`rounded-full border px-3.5 py-2 text-[13px] font-bold transition-colors ${tab === value ? 'border-primary bg-primary text-white' : 'border-border bg-surface text-text hover:bg-primary/5'}`} onClick={() => changeTab(value)}>
             {label}
           </button>
         ))}
@@ -412,14 +846,16 @@ export function MasterDataView({ onViewProducts }: {
     </section>}
 
     {isUnitsTab && <nav aria-label="Master data sections" className={`${PANEL} flex flex-wrap gap-2 p-2`}>
-      <button type="button" aria-pressed={false} className={SECONDARY} onClick={() => setTab('categories')}>Categories</button>
-      <button type="button" aria-pressed={false} className={SECONDARY} onClick={() => setTab('brands')}>Manufacturers</button>
+      <button type="button" aria-pressed={false} className={SECONDARY} onClick={() => changeTab('categories')}>Categories</button>
+      <button type="button" aria-pressed={false} className={SECONDARY} onClick={() => changeTab('brands')}>Manufacturers</button>
       <button type="button" aria-pressed className={BUTTON}>Units ({unitCount})</button>
     </nav>}
+    {isUnitsTab && <p className="text-xs text-muted">Units CSV rows link to existing medicines by product code. Leave unit_id blank to add a unit, or keep the exported ID to update one.</p>}
 
     {error && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger"><span>{error}</span><button type="button" className={SECONDARY} onClick={() => void loadOverview()} disabled={loading}>Retry</button></div>}
     {notice && <div role="status" className="rounded-control border border-border bg-surface px-4 py-3 text-sm text-text">{notice}</div>}
-    {!canManage && <p className="rounded-control border border-border bg-surface px-4 py-3 text-sm text-muted">You have read-only access to master data.</p>}
+    {!isUnitsTab && !canManage && <p className="rounded-control border border-border bg-surface px-4 py-3 text-sm text-muted">You have read-only access to categories and manufacturers.</p>}
+    {isUnitsTab && !canManageUnits && <p className="rounded-control border border-border bg-surface px-4 py-3 text-sm text-muted">Products permission is required to import medicine units.</p>}
 
     {!isUnitsTab && (
       <>

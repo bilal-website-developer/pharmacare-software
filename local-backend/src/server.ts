@@ -18,6 +18,7 @@ import { registerTrashRoutes } from './routes/trashRoutes';
 import { registerNotificationRoutes } from './routes/notificationRoutes';
 import { registerStockRoutes } from './routes/stockRoutes';
 import { registerPreferenceRoutes } from './routes/preferenceRoutes';
+import { registerWorkflowDraftRoutes } from './routes/workflowDraftRoutes';
 import { backupDatabase } from './db/database';
 import { activateShopLicense, checkLicenseStatus, recordSuccessfulCheckin } from './services/licenseService';
 import { getUserById } from './services/authService';
@@ -47,6 +48,21 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
 
   app.register(jwt, {
     secret: jwtSecret,
+    trusted: async (_request, decodedToken) => {
+      const identity = decodedToken as { userId?: unknown; role?: unknown; permissions?: unknown };
+      if (typeof identity.userId !== 'string'
+        || typeof identity.role !== 'string') {
+        return false;
+      }
+      const user = getUserById(db, identity.userId);
+      if (!user || !user.isActive || identity.role !== user.role) return false;
+      if (user.role === 'admin') return true;
+      if (!Array.isArray(identity.permissions)
+        || identity.permissions.some((permission) => typeof permission !== 'string')) return false;
+      const tokenPermissions = [...identity.permissions].sort();
+      const currentPermissions = [...user.permissions].sort();
+      return JSON.stringify(tokenPermissions) === JSON.stringify(currentPermissions);
+    },
   });
 
   // Health check
@@ -67,6 +83,7 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
     '/api/license/status',
     '/api/license/activate',
     '/api/license/check-in',
+    '/api/license/announcements',
     '/api/auth/login',
     '/api/auth/setup-admin',
   ]);
@@ -85,9 +102,19 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
     if (!user || !user.isActive) {
       return reply.status(401).send({ error: 'This account is unavailable.' });
     }
+    request.user = {
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+      permissions: user.permissions,
+    };
 
     const requiredPermissions = routePath === '/api/reports/returns'
       ? ['pos']
+      : routePath === '/api/workflow-drafts/held-bills'
+        ? ['pos']
+        : routePath === '/api/workflow-drafts/purchase-drafts'
+          ? ['purchases']
       : routePath.startsWith('/api/pos/')
       ? ['pos']
       : routePath.startsWith('/api/inventory/products')
@@ -116,7 +143,9 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
                             ? ['manage_users']
                             : routePath.startsWith('/api/trash/')
                               ? ['manage_users']
-                              : routePath.startsWith('/api/notifications/')
+                              : routePath.startsWith('/api/notifications/developer-announcements')
+                                ? []
+                                : routePath.startsWith('/api/notifications/')
                                 ? ['stock_inventory', 'products']
                             : [];
 
@@ -218,6 +247,7 @@ export function buildServer(options: ServerOptions = {}): { app: FastifyInstance
   registerNotificationRoutes(app, db);
   registerStockRoutes(app, db);
   registerPreferenceRoutes(app, db);
+  registerWorkflowDraftRoutes(app, db);
 
   return { app, db };
 }

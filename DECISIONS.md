@@ -28,6 +28,8 @@ The web app keeps pathname routing; the Electron renderer uses URL hash routes s
 
 Local passwords are Argon2id-hashed, and the local Fastify API checks user roles/permissions. Seller discount enforcement uses the cashier percentage setting because the existing shop-settings UI has no separate Seller cap. Backend enforcement, not hidden UI controls, is authoritative for the local checkout route.
 
+The JWT trust callback reloads the account from SQLite whenever tokens are verified. It rejects missing/inactive accounts, changed roles, and non-admin tokens with absent or stale permission arrays. Admin permission claims are not authoritative because Admin access is determined by the current role and signed license entitlements; the global hook replaces request identity with current database values before route checks. Local JWT secrets are generated per app launch, so non-admin tokens do not need a missing-claim compatibility path.
+
 ## Licensing and production gates
 
 Activation uses the central API and a one-time activation redemption procedure. Local Ed25519 signature, expiry, device binding, status, clock high-water mark, and grace-period checks are implemented. The central API still requires a deployed matching key pair, applied schema, Owner allowlist, and end-to-end check-in verification before activation is trusted.
@@ -48,11 +50,53 @@ Portable backups use an authenticated AES-256-GCM envelope to wrap the random lo
 
 Daily backups remain scheduled automatically and are portable when a recovery key is configured; Settings exposes manual portable export/restore, and the login screen allows recovery before sign-in on a replacement PC. Restore keeps rollback copies of the database and protected keys and updates the in-process database key before restarting the local API; error rollback is implemented but packaged restore acceptance remains outstanding. The license remains device-bound and requires operator reissue after transfer. CSV/XLSX exports reuse the records filtered by the respective screens. Export coverage and local data-path parity remain incomplete and are not release acceptance.
 
+## Product CSV import
+
+Product CSV import has no fixed total-row cap. Settings provides full-catalog CSV/XLSX export and CSV import, independent of Products-page filters. Preview and import requests are sent in 500-row batches; the Settings preview summarizes counts and only shows a few errors so large files do not create tens of thousands of DOM nodes. Each import batch is transactional; if a later batch fails, the UI reports the confirmed imported count and requires re-previewing the same file so already-imported products are identified as duplicates. Duplicate preview checks use indexed sets instead of comparing every row with all prior rows.
+
+Optional opening-stock columns are `opening_stock_qty` (sale units), `opening_batch_number`, `opening_expiry_date` (strict future `YYYY-MM-DD`), and `opening_cost_paisa` (per sale unit). The server multiplies quantity by the unit conversion factor and records the batch plus an initial/receipt stock movement atomically. Only users with cost-price visibility can write opening stock. Aggregate legacy/current stock fields are reference-only and do not create sellable batches; never infer a batch from aggregate quantity or expiry.
+
+The supplied source catalog was converted to 36,636 import-valid but inactive review rows. Source `unit` is the sale-unit conversion factor; `percrtn` is a carton count and is not the app's sale-unit factor. `CompanyCode` resolves the complete manufacturer lookup, while `CmpCd` alone misses entries. `rp` was converted from the source's apparent currency units to paisa; verify prices and clinical classifications before activating. A separate five-row DEMO-only file uses synthetic names, quantities, prices, batches, and future expiries; do not merge its fake stock into the real catalog.
+
+Web opening-stock imports use the additive `supabase/migrations/20261122150000_products_csv_opening_stock.sql` wrapper around the existing bulk-import RPC. Apply the migration before using opening-stock fields on web; SQL was not run against a live Supabase project.
+
+## Inactive catalog activation
+
+Imported inactive medicines remain searchable through the Products page's visible Active/Inactive/All status filter. Inactive products are excluded from the desktop stock KPIs. On first activation, the user confirms the current quantity in the product's default sale unit. Zero records that the opening-stock question was answered without creating a batch. Positive quantities require a real batch number, future expiry, and cost-per-sale-unit permission; activation, the batch, stock movement, and persistent one-time marker are committed atomically. Later edits and reactivations do not prompt again. Direct bulk activation is blocked until this first confirmation is recorded.
+
+## Master data CSV exchange
+
+Categories, Manufacturers, and Units each export only the active tab's records; category/manufacturer exports use distinct headers and respect the current search filter. Category/manufacturer imports add new names and skip existing names rather than renaming referenced records. Unit CSVs link to an existing medicine by product code and may include a unit ID to update an existing unit; unit writes reuse the existing product-save permission checks. Unit import preserves exactly one default sale unit per medicine and reports partial failures.
+
 ## Production central licensing deployment
 
-The canonical production Supabase setup is [`supabase/production/setup.sql`](./supabase/production/setup.sql); it limits direct table access to `service_role` and exposes atomic activation consumption and device reissue RPCs. The root Render blueprint builds the central API from its Dockerfile and requires credentials only through Render's protected environment settings. Production Ed25519 keys are generated locally into an ignored directory; the private key stays in the central host's secret store, and desktop packaging requires only the public key and HTTPS API URL.
+The canonical production Supabase setup is [`supabase/production/setup.sql`](./supabase/production/setup.sql). Licensing objects use the `central_` prefix so the new single Supabase project can also host the web app. The `central-licensing` Edge Function serves the API and keeps its service-role/signing credentials server-side; Render is optional. Production Ed25519 keys are generated locally into an ignored directory, and desktop packaging embeds only the public signing key and public Supabase anon key.
 
 The Developer Owner dashboard's **Reissue licence for a new PC** action atomically deletes old device registrations and unused activation keys before storing a new hashed one-time code. This deliberately supports one active device at a time; a disconnected old PC can still use its cached signed entitlement until offline grace expires. The replacement key is displayed once and must be delivered privately.
+
+On 2026-11-23, a local commit captured credential material in the Render blueprint. The owner reports that the old Supabase project was deleted, so its project credentials must not be reused. The Ed25519 signing key is independent of the project and remains compromised; replace it before activation, unless a prior real activation requires a coordinated client rollover. Scrub that history before any future remote publication.
+
+## One-project central licensing and hosting
+
+The owner has only one Supabase project slot and selected the new project for the whole application. Central licensing tables and RPCs are namespaced `central_*`; no central SQL may alter or revoke grants on the app's existing public tables. The API is implemented as a Supabase Edge Function so Render is not required. The function uses the project service-role key only in its server environment; this remains a highly privileged project-wide secret and must never reach browser or desktop builds. Vercel Services deploy the pharmacy web app at `/` and the Developer dashboard at `/developer/`; the central API remains on Supabase Edge Functions, and the loopback-only encrypted local backend stays in the Electron desktop. No Vercel service bindings are needed because there are no server-to-server Vercel calls.
+
+## Desktop update delivery
+
+The desktop uses a manually initiated update flow rather than silent installation. A separately generated Ed25519 key authenticates a stable-version manifest that binds an HTTPS installer URL and its SHA-512 digest. The app verifies the manifest, refuses redirects/HTTP, streams the installer under a size limit, verifies the digest, and only opens it after an explicit user choice. The manifest key is not the license-signing key. Feed hosting, signed Windows Authenticode releases, upgrade/rollback testing, and key rotation remain deployment/release requirements; a signed manifest alone does not make an unsigned installer publisher-verified.
+
+## Desktop workflow drafts
+
+POS held bills and purchase drafts are shop-local workflow state, so desktop mode stores them in encrypted SQLite by authenticated user instead of browser storage. Reads and writes require the corresponding POS or Purchases entitlement/permission, have bounded payload sizes, and cannot target another user. The web application keeps its existing browser-local draft behavior; no draft data is synchronized to the Developer service.
+
+Appearance, saved-filter, and alert-acknowledgement preferences remain per-user/device UI state in browser storage. They do not affect pharmacy records or business calculations and are not synchronized or included in backups. This is an intentional boundary, not a local-backend fallback; business records and operational drafts must use the encrypted local database.
+
+## Developer shop monitoring and announcements
+
+The central service records the last successful check-in, app/OS version, and a boolean indicating whether initial Shop Admin setup completed. It never uploads local account names, passwords, password hashes, or pharmacy business records for this display. The Developer Owner dashboard shows the timestamp and a 24-hour stale-status indicator, not live connectivity.
+
+Offline grace and the warning-before-lockout window are configured centrally and included in the signed license token. The local backend verifies the signature and blocks new transactions after its cached grace period; changes to the signed policy take effect on the next successful check-in. A published announcement is targeted to one or more shops (or all shops) and synced into the local encrypted database on check-in. Only the local Shop Admin can read or mark those announcements; other staff receive no message content. Drafts are central-only and private to authorized Developer Owners; unpublishing/removing a message reaches an offline shop only after it reconnects.
+
+Do not add a covert, hidden Super Admin account, hard-coded credentials, or remote shell/control. The Developer Owner is a central licensing role, distinct from local shop users. Current check-ins report only whether Shop Admin setup is complete; they do not prove or disclose any Super Admin account. The announcement facility provides messages, not automatic software download/installation.
 
 ## 2026-11-22 desktop entitlement and E2E continuation
 

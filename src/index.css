@@ -752,6 +752,14 @@ aside[data-collapsed="true"] .sidebar-nav-item > span {
   animation: page-enter 200ms ease-out both;
 }
 
+.dashboard-metrics-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+}
+
+.dashboard-actions-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+}
+
 .visual-toast {
   animation: toast-in 190ms ease-out both;
 }

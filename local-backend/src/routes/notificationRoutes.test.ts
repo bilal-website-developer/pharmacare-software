@@ -53,3 +53,100 @@ test('local stock alerts report low and out-of-stock products from SQLite', asyn
   assert.ok(data.items.every((item: { kind: string; stock: number }) =>
     item.kind === 'low' ? item.stock > 0 && item.stock <= 5 : item.stock === 0));
 });
+
+test('developer announcements sync from licensing, persist read state, and reconcile unpublishes', async (t) => {
+  const originalDatabaseKey = process.env.DATABASE_KEY;
+  process.env.DATABASE_KEY = 'd'.repeat(64);
+  const { app, db } = buildServer({ dbPath: ':memory:', jwtSecret: 'test-only-announcement-secret' });
+  await app.ready();
+  t.after(async () => {
+    await app.close();
+    db.close();
+    process.env.DATABASE_KEY = originalDatabaseKey;
+  });
+  const admin = await createLocalUser(db, {
+    username: 'announcementadmin',
+    plainTextPassword: 'SecureAdminPassword123!',
+    role: 'admin',
+  });
+  const headers = {
+    authorization: `Bearer ${app.jwt.sign({
+      userId: admin.id,
+      username: admin.username,
+      role: admin.role,
+      permissions: [],
+    })}`,
+  };
+  const manager = await createLocalUser(db, {
+    username: 'announcementmanager',
+    plainTextPassword: 'SecureManagerPassword123!',
+    role: 'manager',
+  });
+  const managerHeaders = {
+    authorization: `Bearer ${app.jwt.sign({
+      userId: manager.id,
+      username: manager.username,
+      role: manager.role,
+      permissions: [],
+    })}`,
+  };
+  const syncResponse = await app.inject({
+    method: 'POST',
+    url: '/api/license/announcements',
+    payload: {
+      announcements: [{
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        title: 'Update notice',
+        body: 'A new version is available.',
+        published_at: new Date().toISOString(),
+      }],
+    },
+  });
+  assert.equal(syncResponse.statusCode, 200, syncResponse.body);
+  const listResponse = await app.inject({
+    method: 'GET',
+    url: '/api/notifications/developer-announcements',
+    headers,
+  });
+  assert.equal(listResponse.statusCode, 200, listResponse.body);
+  assert.equal(listResponse.json()[0].title, 'Update notice');
+  const managerList = await app.inject({
+    method: 'GET',
+    url: '/api/notifications/developer-announcements',
+    headers: managerHeaders,
+  });
+  assert.equal(managerList.statusCode, 200, managerList.body);
+  assert.deepEqual(managerList.json(), []);
+  const managerRead = await app.inject({
+    method: 'POST',
+    url: '/api/notifications/developer-announcements/550e8400-e29b-41d4-a716-446655440000/read',
+    headers: managerHeaders,
+  });
+  assert.equal(managerRead.statusCode, 403);
+
+  const readResponse = await app.inject({
+    method: 'POST',
+    url: '/api/notifications/developer-announcements/550e8400-e29b-41d4-a716-446655440000/read',
+    headers,
+  });
+  assert.equal(readResponse.statusCode, 200, readResponse.body);
+  const readList = await app.inject({
+    method: 'GET',
+    url: '/api/notifications/developer-announcements',
+    headers,
+  });
+  assert.equal(typeof readList.json()[0].read_at, 'number');
+
+  const unpublishResponse = await app.inject({
+    method: 'POST',
+    url: '/api/license/announcements',
+    payload: { announcements: [] },
+  });
+  assert.equal(unpublishResponse.statusCode, 200, unpublishResponse.body);
+  const emptyList = await app.inject({
+    method: 'GET',
+    url: '/api/notifications/developer-announcements',
+    headers,
+  });
+  assert.deepEqual(emptyList.json(), []);
+});

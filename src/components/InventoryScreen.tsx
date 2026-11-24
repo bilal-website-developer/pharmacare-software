@@ -16,7 +16,7 @@ import {
   type DataTableColumn,
 } from './inventory/InventoryUi';
 import {
-  parseProductCsv, previewProductCsv, type ProductImportPreviewRow,
+  chunkProductImportRows, parseProductCsv, previewProductCsv, type ProductImportPreviewRow,
 } from './inventory/productImportLogic';
 import {
   clearProductFilters,
@@ -88,6 +88,7 @@ interface Medicine {
   min_stock_alert: number;
   requires_prescription: boolean;
   is_active: boolean;
+  opening_stock_prompt_required?: boolean;
   units: MedicineUnit[];
   stock: number;
   latest_cost_paisa: number | null;
@@ -231,6 +232,7 @@ function parseLocalMedicine(value: unknown): Medicine | null {
     min_stock_alert: value.minStockAlert,
     requires_prescription: value.requiresPrescription === true,
     is_active: value.isActive,
+    opening_stock_prompt_required: value.openingStockPromptRequired === true,
     units,
     stock: value.currentStockSmallestUnit,
     latest_cost_paisa: typeof value.latestCostPaisa === 'number' ? value.latestCostPaisa : null,
@@ -436,6 +438,13 @@ function ProductsCatalog({
   const [bulkCategory, setBulkCategory] = useState('');
   const [confirmBulkDeactivate, setConfirmBulkDeactivate] = useState(false);
   const [pendingStatusChange, setPendingStatusChange] = useState<{ medicine: Medicine; active: boolean } | null>(null);
+  const [openingStockProduct, setOpeningStockProduct] = useState<Medicine | null>(null);
+  const [openingStockForm, setOpeningStockForm] = useState({
+    quantity: '0',
+    batchNumber: '',
+    expiryDate: '',
+    costPricePaisa: '',
+  });
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importPreview, setImportPreview] = useState<ProductImportPreviewRow[] | null>(null);
@@ -838,9 +847,10 @@ function ProductsCatalog({
 
   const exportHeaders = (includeCost: boolean) => [
     'code', 'barcode', 'brand_name', 'generic_name', 'strength', 'category', 'company',
-    'drug_class', 'storage_condition', 'rack_location', 'min_stock_alert', 'stock',
+    'drug_class', 'storage_condition', 'rack_location', 'min_stock_alert', 'current_stock_reference_smallest_unit',
     'nearest_expiry', 'requires_prescription', 'is_active', 'unit_name', 'conversion_factor',
-    'price_paisa', 'unit_barcode',
+    'price_paisa', 'unit_barcode', 'opening_stock_qty', 'opening_batch_number',
+    'opening_expiry_date', 'opening_cost_paisa',
     ...(includeCost ? ['latest_cost_paisa', 'margin_percent'] : []),
   ];
 
@@ -852,7 +862,7 @@ function ProductsCatalog({
       medicine.storage_condition, medicine.rack_location, medicine.min_stock_alert,
       medicine.stock, medicine.nearest_expiry, medicine.requires_prescription,
       medicine.is_active, unit?.name ?? '', unit?.conversion_factor ?? '',
-      unit?.price_paisa ?? '', unit?.barcode ?? '',
+      unit?.price_paisa ?? '', unit?.barcode ?? '', '', '', '', '',
       ...(includeCost ? [medicine.latest_cost_paisa, medicine.margin_percent] : []),
     ];
   });
@@ -894,8 +904,13 @@ function ProductsCatalog({
       'code', 'barcode', 'brand_name', 'generic_name', 'strength', 'category', 'company',
       'drug_class', 'storage_condition', 'rack_location', 'min_stock_alert',
       'requires_prescription', 'is_active', 'unit_name', 'conversion_factor',
-      'price_paisa', 'unit_barcode',
-    ], []);
+      'price_paisa', 'unit_barcode', 'opening_stock_qty', 'opening_batch_number',
+      'opening_expiry_date', 'opening_cost_paisa',
+    ], [[
+      'DEMO-TEMPLATE-001', '', 'DEMO TEMPLATE PRODUCT', 'DEMO GENERIC', '',
+      'Demo Category', 'Demo Manufacturer', 'OTC', 'ROOM_TEMPERATURE', '', '0',
+      'false', 'false', 'Box', '1', '0', '', '0', '', '', '',
+    ]]);
   };
 
   const downloadSkippedRows = (rows = skippedRows) => {
@@ -917,24 +932,27 @@ function ProductsCatalog({
     setNotice('');
     try {
       const parsedRows = parseProductCsv(await file.text());
-      if (parsedRows.length > 2000) throw new Error('CSV import is limited to 2000 product rows.');
       const localPreview = previewProductCsv(parsedRows, []);
-      let data: unknown;
       const rows = localPreview.map(({ line, values }) => ({ ...values, line }));
-      if (isDesktopMode()) {
-        data = await localApiRequest<unknown>('/api/inventory/products/import-preview', 'POST', { rows });
-      } else {
-        if (!supabase) throw new Error('Supabase is not configured.');
-        const result = await supabase.rpc('products_import_preview', { rows });
-        if (result.error) throw result.error;
-        data = result.data;
-      }
-      if (!Array.isArray(data) || data.some((row) => !isRecord(row)
-        || typeof row.line !== 'number' || typeof row.duplicate_in_database !== 'boolean')) {
-        throw new Error('The import-preview service returned an invalid response.');
+      const previewRows: unknown[] = [];
+      for (const batch of chunkProductImportRows(rows)) {
+        let data: unknown;
+        if (isDesktopMode()) {
+          data = await localApiRequest<unknown>('/api/inventory/products/import-preview', 'POST', { rows: batch });
+        } else {
+          if (!supabase) throw new Error('Supabase is not configured.');
+          const result = await supabase.rpc('products_import_preview', { rows: batch });
+          if (result.error) throw result.error;
+          data = result.data;
+        }
+        if (!Array.isArray(data) || data.some((row) => !isRecord(row)
+          || typeof row.line !== 'number' || typeof row.duplicate_in_database !== 'boolean')) {
+          throw new Error('The import-preview service returned an invalid response.');
+        }
+        previewRows.push(...data);
       }
       const databaseDuplicates = new Set<number>();
-      for (const row of data) {
+      for (const row of previewRows) {
         if (isRecord(row) && row.duplicate_in_database === true && typeof row.line === 'number') {
           databaseDuplicates.add(row.line);
         }
@@ -973,25 +991,33 @@ function ProductsCatalog({
     }
     setImporting(true);
     setNotice('');
+    let importedCount = 0;
+    let allRowsImported = false;
     try {
-      let data: unknown;
-      if (isDesktopMode()) {
-        data = await localApiRequest<unknown>('/api/inventory/products/import', 'POST', {
-          rows: validRows.map(({ line, values }) => ({ ...values, line })),
-        });
-      } else {
-        if (!supabase) throw new Error('Supabase is not configured.');
-        const result = await supabase.rpc('products_bulk_import', {
-          rows: validRows.map(({ line, values }) => ({ ...values, line })),
-        });
-        if (result.error) throw result.error;
-        data = result.data;
+      const rows = validRows.map(({ line, values }) => ({ ...values, line }));
+      for (const batch of chunkProductImportRows(rows)) {
+        let data: unknown;
+        if (isDesktopMode()) {
+          data = await localApiRequest<unknown>('/api/inventory/products/import', 'POST', { rows: batch });
+        } else {
+          if (!supabase) throw new Error('Supabase is not configured.');
+          const result = await supabase.rpc('products_bulk_import_with_opening_stock', { rows: batch });
+          if (result.error) throw result.error;
+          data = result.data;
+        }
+        const reportedImportCount = isRecord(data) ? data.imported_count ?? data.importedCount : undefined;
+        if (typeof reportedImportCount !== 'number') {
+          throw new Error('The import service returned an invalid response.');
+        }
+        const batchImportedCount = reportedImportCount;
+        if (batchImportedCount !== batch.length) {
+          throw new Error(`The import service confirmed ${batchImportedCount} of ${batch.length} products in a batch.`);
+        }
+        importedCount += batchImportedCount;
+        setNotice(`Imported ${importedCount.toLocaleString()} of ${validRows.length.toLocaleString()} products...`);
       }
+      allRowsImported = true;
       dispatchStockChanged();
-      if (!isRecord(data) || typeof (data.imported_count ?? data.importedCount) !== 'number') {
-        throw new Error('The import service returned an invalid response.');
-      }
-      const importedCount = (data.imported_count ?? data.importedCount) as number;
       setSkippedRows(rowsToSkip);
       await loadProducts();
       setSelectedIds([]);
@@ -999,7 +1025,23 @@ function ProductsCatalog({
       setImportPreview(null);
       setSkippedLines([]);
     } catch (caught) {
-      setNotice(messageFor(caught, 'Could not import products. No rows were imported.'));
+      setSkippedRows(rowsToSkip);
+      setImportPreview(null);
+      setSkippedLines([]);
+      if (allRowsImported) {
+        setNotice(`Imported ${importedCount} products, but could not refresh the product list: ${messageFor(caught, 'Refresh failed.')}`);
+      } else if (importedCount > 0) {
+        dispatchStockChanged();
+        try {
+          await loadProducts();
+        } catch (refreshError) {
+          setNotice(`Imported ${importedCount} products in earlier batches, but could not refresh the product list: ${messageFor(refreshError, 'Refresh failed.')}`);
+          return;
+        }
+        setNotice(`Import stopped after ${importedCount} products were confirmed. Re-select the same CSV to check for already imported products before continuing. ${messageFor(caught, 'The next batch failed.')}`);
+      } else {
+        setNotice(`${messageFor(caught, 'Could not import products.')} Re-select the CSV to preview it again before retrying.`);
+      }
     } finally {
       setImporting(false);
     }
@@ -1335,6 +1377,65 @@ function ProductsCatalog({
     }
   };
 
+  const requestProductStatusChange = (medicine: Medicine, active: boolean) => {
+    if (active && isDesktopMode() && medicine.opening_stock_prompt_required) {
+      setPendingStatusChange(null);
+      setNotice('');
+      setOpeningStockForm({ quantity: '0', batchNumber: '', expiryDate: '', costPricePaisa: '' });
+      setOpeningStockProduct(medicine);
+      return;
+    }
+    setPendingStatusChange({ medicine, active });
+  };
+
+  const activateWithInitialStock = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!openingStockProduct) return;
+    const quantityText = openingStockForm.quantity.trim();
+    const quantity = Number(quantityText);
+    if (!quantityText || !Number.isSafeInteger(quantity) || quantity < 0 || quantity > 2_147_483_647) {
+      setNotice('Enter a whole opening-stock quantity of zero or more.');
+      return;
+    }
+    if (quantity > 0) {
+      const cost = Number(openingStockForm.costPricePaisa);
+      if (!canViewCost) {
+        setNotice('Cost-price permission is required to record positive opening stock. You can activate with zero stock and add a purchase later.');
+        return;
+      }
+      if (!openingStockForm.batchNumber.trim() || openingStockForm.batchNumber.trim().length > 100) {
+        setNotice('Enter a batch number of 1 to 100 characters.');
+        return;
+      }
+      if (!openingStockForm.expiryDate || openingStockForm.expiryDate <= today()) {
+        setNotice('Enter a future expiry date for this batch.');
+        return;
+      }
+      if (!Number.isSafeInteger(cost) || cost < 0 || cost > 2_147_483_647) {
+        setNotice('Enter a valid opening cost in paisa per sale unit.');
+        return;
+      }
+    }
+    setImporting(true);
+    setNotice('');
+    try {
+      await localApiRequest(`/api/inventory/products/${openingStockProduct.id}/activate-initial-stock`, 'POST', {
+        openingStockQty: quantity,
+        batchNumber: quantity > 0 ? openingStockForm.batchNumber.trim() : '',
+        expiryDate: quantity > 0 ? openingStockForm.expiryDate : '',
+        costPricePaisa: quantity > 0 ? Number(openingStockForm.costPricePaisa) : null,
+      });
+      dispatchStockChanged();
+      setNotice(`${openingStockProduct.brand_name} activated.`);
+      setOpeningStockProduct(null);
+      await loadProducts();
+    } catch (caught) {
+      setNotice(messageFor(caught, 'Could not activate product.'));
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const renderProductActions = (medicine: Medicine) => (
     <div className="flex flex-wrap gap-1.5" role="group" aria-label={`Actions for ${medicine.brand_name}`}>
       <button
@@ -1602,6 +1703,17 @@ function ProductsCatalog({
           <option value="CONTROLLED">Controlled</option>
         </select>
 
+        <select
+          aria-label="Filter active status"
+          className="rounded-full border border-border bg-surface px-2.5 py-1 text-xs font-medium text-text focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+          value={activeFilter}
+          onChange={(event) => { setPage(1); setActiveFilter(event.target.value as typeof activeFilter); }}
+        >
+          <option value="active">Status: Active</option>
+          <option value="inactive">Status: Inactive</option>
+          <option value="all">Status: All</option>
+        </select>
+
         <label className={`inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${lowStockOnly ? 'border-accent bg-accent/10 text-accent' : 'border-border bg-surface text-text'}`}>
           <input
             type="checkbox"
@@ -1627,16 +1739,6 @@ function ProductsCatalog({
             More filters
           </summary>
           <div className="absolute right-0 z-20 mt-1 grid min-w-48 gap-2 rounded-control border border-border bg-surface p-2.5 shadow-lg">
-            <select
-              aria-label="Filter active status"
-              className="rounded-control border border-border bg-surface px-2 py-1 text-xs text-text"
-              value={activeFilter}
-              onChange={(event) => { setPage(1); setActiveFilter(event.target.value as typeof activeFilter); }}
-            >
-              <option value="active">Status: Active</option>
-              <option value="inactive">Status: Inactive</option>
-              <option value="all">Status: All</option>
-            </select>
             <label className="grid gap-1 text-[11px] font-semibold text-muted">Sort products
               <select
                 aria-label="Sort products"
@@ -1778,8 +1880,8 @@ function ProductsCatalog({
           }] : []),
           ...(canViewStockInventory && onViewBatches ? [{ label: 'View batches', onSelect: (medicine: Medicine) => onViewBatches(medicine.id) }] : []),
           ...(canEditProducts ? [
-            { label: 'Deactivate product', onSelect: (medicine: Medicine) => setPendingStatusChange({ medicine, active: false }), disabled: (medicine: Medicine) => !medicine.is_active },
-            { label: 'Activate product', onSelect: (medicine: Medicine) => setPendingStatusChange({ medicine, active: true }), disabled: (medicine: Medicine) => medicine.is_active },
+            { label: 'Deactivate product', onSelect: (medicine: Medicine) => requestProductStatusChange(medicine, false), disabled: (medicine: Medicine) => !medicine.is_active },
+            { label: 'Activate product', onSelect: (medicine: Medicine) => requestProductStatusChange(medicine, true), disabled: (medicine: Medicine) => medicine.is_active },
           ] : []),
         ]}
       />
@@ -1822,6 +1924,103 @@ function ProductsCatalog({
         onCancel={() => setPendingStatusChange(null)}
         onConfirm={() => pendingStatusChange && void changeProductStatus(pendingStatusChange.medicine, pendingStatusChange.active)}
       />
+      {openingStockProduct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-4">
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="opening-stock-title"
+            onSubmit={(event) => void activateWithInitialStock(event)}
+            className={`${PANEL} my-auto w-full max-w-xl space-y-4 p-5`}
+          >
+            <div>
+              <h3 id="opening-stock-title" className="text-lg font-black text-text">Activate {openingStockProduct.brand_name}</h3>
+              <p className="mt-1 text-sm text-muted">
+                Enter the stock currently on hand for the first activation. Quantity is in the default sale unit
+                {' '}({openingStockProduct.units.find((unit) => unit.is_default_sale_unit)?.name ?? 'unit'}).
+              </p>
+            </div>
+            {notice && <p role="alert" className="rounded-control border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">{notice}</p>}
+            <label className="block text-sm text-text">
+              Opening stock quantity
+              <input
+                className={`${FIELD} mt-1`}
+                type="number"
+                min="0"
+                max="2147483647"
+                step="1"
+                required
+                value={openingStockForm.quantity}
+                onChange={(event) => setOpeningStockForm({ ...openingStockForm, quantity: event.target.value })}
+              />
+            </label>
+            {Number(openingStockForm.quantity) > 0 ? (
+              <>
+                <p className="rounded-control border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-text">
+                  Use the real batch number, expiry, and purchase cost. Stock is converted to the product&apos;s smallest unit automatically.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm text-text">
+                    Batch number *
+                    <input
+                      className={`${FIELD} mt-1`}
+                      required
+                      maxLength={100}
+                      value={openingStockForm.batchNumber}
+                      onChange={(event) => setOpeningStockForm({ ...openingStockForm, batchNumber: event.target.value })}
+                    />
+                  </label>
+                  <label className="text-sm text-text">
+                    Expiry date *
+                    <input
+                      className={`${FIELD} mt-1`}
+                      type="date"
+                      min={today()}
+                      required
+                      value={openingStockForm.expiryDate}
+                      onChange={(event) => setOpeningStockForm({ ...openingStockForm, expiryDate: event.target.value })}
+                    />
+                  </label>
+                  {canViewCost && (
+                    <label className="text-sm text-text sm:col-span-2">
+                      Cost per sale unit (paisa) *
+                      <input
+                        className={`${FIELD} mt-1`}
+                        type="number"
+                        min="0"
+                        max="2147483647"
+                        step="1"
+                        required
+                        value={openingStockForm.costPricePaisa}
+                        onChange={(event) => setOpeningStockForm({ ...openingStockForm, costPricePaisa: event.target.value })}
+                      />
+                    </label>
+                  )}
+                  {!canViewCost && (
+                    <p className="text-sm text-danger sm:col-span-2">
+                      Your account needs cost-price permission to enter positive opening stock. Set the quantity to zero to activate now, then record stock through Purchases.
+                    </p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <p className="rounded-control border border-border bg-surface px-3 py-2 text-sm text-muted">
+                Zero confirms there is no opening stock. You can add stock later through Purchases.
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <button type="button" className={SECONDARY} onClick={() => setOpeningStockProduct(null)}>Cancel</button>
+              <button
+                type="submit"
+                className={BUTTON}
+                disabled={importing || (!canViewCost && Number(openingStockForm.quantity) > 0)}
+              >
+                {importing ? 'Activating…' : 'Activate product'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
       {importPreview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <section role="dialog" aria-modal="true" aria-labelledby="product-import-title" className={`${PANEL} w-full max-w-3xl space-y-4 p-5`}>
@@ -1835,8 +2034,14 @@ function ProductsCatalog({
             <p className="rounded-control border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-text">
               Missing categories and manufacturers are created through the existing category/brand functions. Your account needs Categories permission if the import contains new values.
             </p>
+            <p className="rounded-control border border-border bg-surface px-3 py-2 text-xs text-muted">
+              Opening stock is in sale units and requires a batch number, future expiry, and cost in paisa per sale unit. Current stock exports are reference-only; only verified opening-batch fields create stock.
+            </p>
+            <p className="text-xs text-muted">
+              Showing the first 100 rows only so large imports remain responsive. Download skipped rows to review every rejected line.
+            </p>
             <div className="max-h-[50vh] space-y-2 overflow-y-auto">
-              {importPreview.map((row) => (
+              {importPreview.slice(0, 100).map((row) => (
                 <article key={row.line} className="rounded-control border border-border p-3 text-sm">
                   <strong>Line {row.line}: {row.values.brand_name || 'Unnamed product'}</strong>
                   <p className="text-xs text-muted">{row.values.generic_name}{row.values.strength ? ` · ${row.values.strength}` : ''} · {row.values.company} · {row.values.drug_class || 'OTC'}</p>

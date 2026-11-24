@@ -12,6 +12,7 @@ interface DevelopmentLicenseState {
   licenseStatus: LicenseClaims['status'];
   expiresAt: string;
   graceDays: number;
+  warningDays?: number;
   activationCodeHash: string;
   activationUsed: boolean;
   hardwareId: string | null;
@@ -45,6 +46,7 @@ export function buildDevelopmentLicensingServer(configDir: string): FastifyInsta
       hardwareId,
       status: state.shopStatus === 'ACTIVE' ? state.licenseStatus : 'SUSPENDED',
       graceDays: state.graceDays,
+      warningDays: state.warningDays,
       ...access,
     }, privateKey);
   };

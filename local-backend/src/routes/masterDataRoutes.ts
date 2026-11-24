@@ -99,7 +99,7 @@ export function registerMasterDataRoutes(app: FastifyInstance, db: Database.Data
   app.get('/api/master-data/units', async (_request, reply) => {
     try {
       const units = db.prepare(`
-        SELECT u.id, u.medicine_id, u.name, u.conversion_factor,
+        SELECT u.id, u.medicine_id, m.code AS medicine_code, u.name, u.conversion_factor,
                u.is_default_sale_unit, u.price_per_unit_paisa AS price_paisa, u.barcode,
                m.brand_name || ' · ' || m.generic_name || ' (' || m.code || ')' AS medicine_name
         FROM medicine_units u

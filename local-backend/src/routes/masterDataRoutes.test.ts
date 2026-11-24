@@ -67,6 +67,7 @@ test('local master data supports category, manufacturer, and unit reads and writ
   assert.deepEqual(unitList.json()[0], {
     id: unitId,
     medicine_id: medicineId,
+    medicine_code: 'M-1',
     name: 'Box',
     conversion_factor: 10,
     is_default_sale_unit: true,
