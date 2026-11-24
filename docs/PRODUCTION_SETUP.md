@@ -10,7 +10,7 @@ A prior local commit (`3b96d3f`) captured credential material in the Render blue
 
 The owner's new Supabase project is the only project available and is intended for the whole application. The Edge Function keeps the signing key in Supabase Function Secrets; the browser and desktop receive only the public anon key and the public signing key.
 
-The replacement keypair is stored locally in the ignored `central-backend/.production-keys/` directory; the private key contents were not displayed or committed. Add that private key to the Supabase Edge Function secret named `CENTRAL_LICENSE_PRIVATE_KEY`. The public key is safe to distribute and must be provided to desktop packaging through `CENTRAL_LICENSE_PUBLIC_KEY`. GitHub publication will use a clean snapshot based on the existing remote branch, excluding the unpublished history that contains the old values.
+The replacement keypair is stored locally in the ignored `central-backend/.production-keys/` directory; the private key contents were not displayed or committed. Add that private key to the Supabase Edge Function secret named `CENTRAL_LICENSE_PRIVATE_KEY` before production activation. The public key is safe to distribute and must be provided to desktop packaging through `CENTRAL_LICENSE_PUBLIC_KEY`. GitHub now contains a clean source snapshot that excludes the unpublished history with old values.
 
 ## What you need
 
