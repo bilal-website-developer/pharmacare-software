@@ -871,7 +871,9 @@ test('desktop roles, entitlements, offline workflows, and installed-app retentio
     });
     assert.ok(restoredSettingsCsvProduct.products.some((entry) => entry.code === 'E2E-SETTINGS-CSV-001'));
 
+    const firstElectronProcess = firstElectronApp.process();
     await firstElectronApp.close();
+    await waitForChildExit(firstElectronProcess, 30_000);
     electronApp = null;
     assert.ok(central, 'central service was not running');
     await central.close();
@@ -903,9 +905,17 @@ test('desktop roles, entitlements, offline workflows, and installed-app retentio
     }));
     electronApp = entitlementElectronApp;
     page = await entitlementElectronApp.firstWindow();
-    await page.getByLabel('USERNAME').fill(adminUsername);
-    await page.locator('#password').fill(adminPassword);
-    await page.getByRole('button', { name: 'Sign In to System', exact: true }).click();
+    const usernameField = page.getByLabel('USERNAME');
+    const loginVisible = await usernameField.waitFor({ state: 'visible', timeout: 10_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (loginVisible) {
+      await usernameField.fill(adminUsername);
+      await page.locator('#password').fill(adminPassword);
+      await page.getByRole('button', { name: 'Sign In to System', exact: true }).click();
+    } else {
+      await page.getByRole('navigation', { name: 'Main navigation' }).waitFor({ timeout: 10_000 });
+    }
     let updatedLicense: { enabledPages: string[] } | null = null;
     for (let attempt = 0; attempt < 40; attempt += 1) {
       updatedLicense = await localApi<{ enabledPages: string[] }>(page, { path: '/api/license/status' });

@@ -52,7 +52,7 @@ npm run central:keys:generate
 
 The script creates an Ed25519 pair under the ignored `central-backend/.production-keys/` directory. It refuses to overwrite an existing pair, restricts the directory to the current Windows user (and uses private directory/file modes on POSIX), and prints only file paths, never key contents. Back up the private key in an approved secrets vault. Do not commit it, upload it to the desktop, or put it in a renderer/dashboard build setting. The public key is safe to distribute with desktop builds.
 
-The current local pair is compromised as described above and must not be used. The generator refuses to overwrite an existing pair. Only after confirming that no real shop used it, remove the two named files and run the generator again. Never copy the private key into Git, the desktop, or the dashboard.
+The replacement local pair is already present in the ignored `central-backend/.production-keys/` directory. Do not remove or regenerate it; the generator intentionally refuses to overwrite existing keys. Use this pair only after confirming that no production shop was activated with the old signing key. Never copy the private key into Git, the desktop, or the dashboard.
 
 ## 3. Deploy the central API as a Supabase Edge Function
 
