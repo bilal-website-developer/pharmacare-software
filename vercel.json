@@ -19,14 +19,28 @@
       "source": "/developer",
       "destination": {
         "service": "developer-dashboard",
-        "path": "/"
+        "path": "/index.html"
+      }
+    },
+    {
+      "source": "/developer/",
+      "destination": {
+        "service": "developer-dashboard",
+        "path": "/index.html"
+      }
+    },
+    {
+      "source": "/developer/assets/:path*",
+      "destination": {
+        "service": "developer-dashboard",
+        "path": "/assets/:path*"
       }
     },
     {
       "source": "/developer/:path*",
       "destination": {
         "service": "developer-dashboard",
-        "path": "/:path*"
+        "path": "/index.html"
       }
     },
     {

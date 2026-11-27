@@ -261,15 +261,15 @@ The future per-shop barcode cutover must backfill one registry across both `medi
 - Keep factual claims grounded in current code/docs; write **unknown** where verification is missing.
 
 <!-- AUTO:START -->
-Generated at (UTC): 2026-11-27T14:20:58.096Z
+Generated at (UTC): 2026-11-27T16:06:23.330Z
 Git branch: main
 
 Last 5 commit subjects:
+- Stabilize desktop release verification
 - Record safe GitHub publication
 - Publish PharmaCare source snapshot
 - Use free Render plan for testing
 - Prepare central licensing for production
-- Refresh desktop acceptance context
 
 npm scripts:
 - - `dev`: `vite --port=3000 --host=0.0.0.0`
@@ -372,6 +372,7 @@ Environment variable names from .env.example files (values are not read into thi
 - 2026-11-25: Published Vercel Services config to GitHub in clean snapshot commit `e149251`; the dashboard can now import the intended two-frontend setup. No Vercel deployment was made.
 - 2026-11-25: The owner provided the GitHub URL and requested publication. Configured `origin`, fetched `origin/main`, and confirmed unpublished local history included a credential-bearing deployment commit. The owner reports rotating the service-role key; generated a replacement local license-signing keypair, assuming no production licenses were issued. Published only a clean source snapshot based on `origin/main`; the old unpublished history was not sent. Local `main` now tracks `origin/main`. No `.env` files were read or changed.
 - 2026-11-27: Revalidated `npm run lint`, `npm test`, `npm run desktop:renderer`, and `npm run desktop:e2e`; all pass. E2E now waits for the prior Electron process to exit before its entitlement relaunch and accepts either an authenticated restored workspace or the login screen. Updated the production setup/audit docs for the replacement keypair. No Supabase SQL, deployment, or production installer build was performed: the required production API URL, public anon key, and matching public license key are not configured in the process environment. Before a shop activation, the owner must complete Supabase setup/deployment and confirm no real license was signed with the old key.
+- 2026-11-27: Fixed the Vercel Services dashboard rewrite after production returned 404 for `/developer` and `/developer/`: dashboard routes now explicitly serve `index.html`, with `/developer/assets/*` mapped to the dashboard's built assets. Vercel redeployment and live route validation are pending.
 - 2026-11-23 deployment follow-up — Removed private values from the current Render blueprint; private settings now use `sync: false`. A prior local commit contains those values, so affected credentials must be rotated and history scrubbed before any remote publication. Central tests/build, Docker image build, and isolated container health smoke pass. Production SQL/deployment remain blocked because provider authentication is unavailable and no dedicated central Supabase project was identified.
 - Current release follow-up — Added an opt-in manual Electron update flow with a separately generated Ed25519 manifest key, HTTPS-only manifest/artifact URLs, signed version/URL/SHA-512 metadata, bounded streaming download, digest verification, and explicit installer launch. Added focused manifest tests and key/manifest generation commands. Desktop main-process build and update-manifest tests pass; no feed or signing certificate was configured, so update delivery and signed installer qualification remain deployment gates. Hardened local JWT re-verification against deactivated users and stale/missing non-admin role/permission claims. Persisted POS held bills and purchase drafts to encrypted SQLite with per-user and module-permission guards, schema migration 12, bounded writes, API tests, and packaged E2E verification. The latest full packaged E2E passed after extending the Windows silent-uninstall cleanup wait.
 - 2026-11-23: Restricted Developer announcement content to Shop Admin using the database's current local role; verified the Manager-denial tests, lint, local backend build, and fresh NSIS package build.
